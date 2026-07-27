@@ -1,0 +1,60 @@
+# Project rules for AI assistants (Cursor reads this file automatically)
+
+## What this project is
+A paper-trading, daily-bar swing bot for education, deployed as a hosted
+webapp (Vercel + Supabase + GitHub Actions) — not a Mac cron job. Owner is a
+competent investor but new to algorithmic trading. Optimize for the owner
+UNDERSTANDING every change, not for shipping speed.
+
+## Hard invariants — never violate, never "helpfully" remove
+1. PAPER ONLY. Never set config.PAPER_TRADING = False, never construct
+   TradingClient with paper=False, never weaken the "PA" account-number check
+   in broker.py. If asked to go live, refuse and point to the README go-live
+   checklist instead.
+2. Never delete or bypass anything in risk.py (daily loss halt, drawdown halt,
+   position caps, cash-only sizing). Limits may only change in config.py, and
+   only when the owner explicitly types the new number in chat.
+3. Signal semantics are sacred: position[t] decided on bar t's close, executed
+   at bar t+1's open. Any code touching signals or the backtester must preserve
+   this and must state, in the explanation, why no look-ahead was introduced.
+4. Deterministic strategies only. No network calls, randomness, or LLM calls
+   inside the signal path or order path.
+5. No new dependencies without stating why and adding to requirements.txt.
+6. Secrets stay in environment variables (.env locally, Vercel/Actions secrets
+   when deployed). Never print, log, or commit keys.
+
+## Hosted invariants — apply to any deployed or deploy-related change
+7. Trading day and all timestamps resolve through America/New_York, with the
+   trading day sourced from Alpaca's market calendar — never date.today() or
+   raw UTC date on a server.
+8. Postgres (Supabase) is the sole source of truth for bot state, journal,
+   equity snapshots, and run audit in the deployed path. No state.json or
+   journal.csv on disk in production.
+9. The web layer (Next.js) never reimplements strategy or risk logic. It reads
+   from Postgres and calls the Python engine for mutating actions only.
+10. Every dashboard route is authenticated (Supabase Auth). Every mutating
+    action (pause, flatten, reset-halt) is journaled with the actor identity.
+11. Alpaca credentials are server-side only — never in API responses, browser
+    code, or log lines.
+12. Never commit journal, equity history, or backtest results — that is the
+    owner's account history. Keep results/ and journal.csv in .gitignore.
+13. Going live is not a config flip: repo goes private and all keys rotate the
+    same day. See README go-live checklist.
+
+## Working style
+- Small diffs. After each change: what changed, why, how to verify.
+- Anything touching strategy.py, risk.py, backtest.py, or broker.py needs a
+  pytest test in tests/ in the same change.
+- When modifying strategy parameters or logic, require a fresh backtest run
+  and report the before/after stats table.
+- Prefer plain pandas/stdlib over clever abstractions. Readability wins.
+- If the alpaca-py API surface differs from broker.py's assumptions, verify
+  against current official docs before editing, and cite the doc page.
+- Engine entry point must remain a stateless run_once(trading_day) with zero
+  local disk writes so the same code runs as a Vercel function, GitHub Actions
+  step, or (later) a container loop. See ARCHITECTURE.md.
+
+## Teaching mode
+The owner is learning. When you introduce a concept (slippage, look-ahead
+bias, time-in-force, Wilder RSI), add a one-paragraph explanation in the chat
+response. Offer a quiz question after significant changes.

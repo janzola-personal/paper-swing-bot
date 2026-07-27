@@ -1,0 +1,6 @@
+alpaca-py>=0.30
+pandas>=2.0
+numpy>=1.26
+yfinance>=0.2.40
+python-dotenv>=1.0
+pytest>=8.0
