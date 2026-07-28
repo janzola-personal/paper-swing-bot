@@ -10,6 +10,7 @@ export const config = {
     "/",
     "/login",
     "/dashboard/:path*",
+    "/education/:path*",
     "/research/:path*",
     "/gate/:path*",
     // Next.js dashboard APIs only — cron / engine_* Python routes stay open

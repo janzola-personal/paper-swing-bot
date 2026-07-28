@@ -11,6 +11,11 @@ test("unauthenticated /dashboard redirects to /login", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /Paper Swing Bot/i })).toBeVisible();
 });
 
+test("unauthenticated /education redirects to /login", async ({ page }) => {
+  await page.goto("/education");
+  await expect(page).toHaveURL(/\/login/);
+});
+
 test("unauthenticated /api/status returns 401", async ({ request }) => {
   const res = await request.get("/api/status");
   expect(res.status()).toBe(401);

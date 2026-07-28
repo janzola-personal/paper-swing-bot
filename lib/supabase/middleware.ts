@@ -48,6 +48,7 @@ export async function updateSession(request: NextRequest) {
   const isLogin = path === "/login";
   const isProtected =
     path.startsWith("/dashboard") ||
+    path.startsWith("/education") ||
     path.startsWith("/research") ||
     path.startsWith("/gate") ||
     path.startsWith("/api/");
