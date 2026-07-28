@@ -58,7 +58,10 @@ Documentation:
 
 Infrastructure (created during Part B/C — see CURSOR_PROMPTS.md):
 
-    web/               Next.js dashboard (Vercel)
+    app/                   Next.js dashboard (Vercel App Router)
+    lib/ components/       Auth, dashboard UI, server helpers
+    api/*.py               Python serverless (run / capture / watchdog / mutations)
+    content/               REPORT.md + gate shell for /research and /gate
     supabase/migrations/   Postgres schema
     .github/workflows/     scheduled runs + watchdog + research
 
@@ -84,13 +87,82 @@ See **DEPLOY.md** for full steps. Summary:
 
 1. Public GitHub repo (MIT LICENSE), secret scanning enabled.
 2. Supabase: Postgres + Auth (one user, signups off).
-3. Vercel: Next.js dashboard + Python `run_once` handler.
+3. Vercel: Next.js stub + Python `api/run` / `api/capture` / `api/watchdog`.
 4. GitHub Actions: after-close run, 9:31am day-start capture, watchdog.
-5. Resend: daily digest email.
+5. Resend: daily digest email (Part C polish).
 6. **Shadow week:** `BOT_SHADOW_MODE=true` — journal only, no orders.
-7. **Go live on paper:** `BOT_SUBMIT=true` — auto-submit after close.
+7. **Go live on paper:** `BOT_SUBMIT=true`, `BOT_SHADOW_MODE=false` — auto-submit
+   Alpaca **paper** market DAY orders after close (fill next open).
 
-Dashboard URL: your Vercel project. Login via Supabase Auth.
+**Dashboard:** your Vercel URL (e.g. `https://paper-swing-bot.vercel.app`).
+Login with the single Supabase Auth user (email + password). Public signups
+must stay disabled. Unauthenticated visits to `/dashboard` redirect to `/login`.
+
+Local UI:
+
+```bash
+npm install
+# .env.local needs NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY
+npm run dev
+```
+
+Auth smoke test: `npx playwright install chromium && npm run test:auth-smoke`
+
+There is **no buy button**. The bot enters on the after-close schedule; the UI
+only pauses, flattens in emergencies, or clears a hard halt (each journals your
+email as `actor`).
+
+## Deploy (shadow mode)
+
+Hosted entrypoint is `hosted.run_after_close()` → `engine.run_once(..., shadow=True)`
+by default. Dual schedulers are safe: Postgres `UNIQUE (trading_day, strategy)`.
+
+| Piece | Path |
+|-------|------|
+| Vercel after-close | `api/run.py` + cron `15 21 * * 1-5` (≈5:15pm ET in EDT) |
+| Vercel open capture | `api/capture.py` + cron `31 13 * * 1-5` (≈9:31am ET in EDT) |
+| Vercel watchdog | `api/watchdog.py` + cron `30 22 * * 1-5` (≈6:30pm ET in EDT) |
+| Actions after-close | `.github/workflows/daily-run.yml` |
+| Actions open capture | `.github/workflows/open-capture.yml` |
+| Actions watchdog | `.github/workflows/watchdog.yml` |
+| Next.js UI | `/dashboard` (six sections), `/research`, `/gate`, mutations → `api/engine_*` |
+
+**Required secrets** (Vercel + GitHub Actions): see DEPLOY.md §4 — at least
+`ALPACA_*`, `DATABASE_URL`, `BOT_SHADOW_MODE=true`, `BOT_SUBMIT=false`.
+Set `CRON_SECRET` on Vercel (Cron sends `Authorization: Bearer …`).
+
+**First shadow run checklist**
+
+1. Confirm env: `BOT_SHADOW_MODE=true`, `BOT_SUBMIT=false`, `STATE_BACKEND` → Postgres via `DATABASE_URL`.
+2. Trigger Actions → **daily-run** → Run workflow (or wait for cron / call `/api/run` with the bearer secret).
+3. In Supabase SQL: `select * from runs order by started_at desc limit 5;` — expect `mode=shadow`, `status=ok` (or `skipped_duplicate` if dual-fired).
+4. `select trading_day, symbol, action, qty, reason, dry_run from journal order by id desc limit 20;` — decisions with `dry_run=true`.
+5. Second trigger same day → `skipped_duplicate`, no new orders (always zero orders while shadowed).
+
+Re-run locally against Postgres:
+
+```bash
+STATE_BACKEND=postgres BOT_SHADOW_MODE=true BOT_SUBMIT=false \
+  python -c "from hosted import run_after_close, result_to_dict; import json; print(json.dumps(result_to_dict(run_after_close()), indent=2))"
+```
+
+## Stage B paper discipline (Part D)
+
+Paper submit is enabled when `BOT_SUBMIT=true` and `BOT_SHADOW_MODE=false`.
+See **[PAPER_REVIEW.md](PAPER_REVIEW.md)** for the weekly checklist (journal vs
+email, paper vs backtest chart, gate counters, halt drill).
+
+**Swing Stage B targets** (from PHASE2 §1, adapted for daily rsi2):
+
+| Criterion | Threshold |
+|-----------|-----------|
+| Trading days | ≥ 60 with submit-mode runs |
+| Completed trades | ≥ 40 (actual BUY/SELL, not dry-run) |
+| Manual overrides | 0 (pause/flatten/reset-halt only when needed; each journals actor) |
+| Consistency | Paper directionally matches backtest OOS over same window |
+
+Track progress on the dashboard **Gate progress** card. Calendar reminder:
+Sunday 30 min review.
 
 ## Safety rails (risk.py — the load-bearing walls)
 

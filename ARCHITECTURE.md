@@ -131,8 +131,9 @@ or the backtester must explain why no look-ahead was introduced.
 
 ## Postgres schema (deployed path)
 
-Local development may still use `state.json` and `journal.csv` until Part B
-migrates state. Production uses only Postgres.
+Injectable `db.Store`: `PostgresStore` (production), `FileStore` (optional
+local `state.json` / `journal.csv` / `runs.json`), `SQLiteStore` / `MemoryStore`
+(tests). Set `STATE_BACKEND=file` to force files even if `DATABASE_URL` is set.
 
 ### `bot_state` (single row or key-value)
 
@@ -210,6 +211,10 @@ See WEBUI.md for layout and NOTIFICATIONS.md for email templates.
 
 - Public repo: strategy code only; secrets in Vercel/Actions/Supabase env.
 - Supabase Auth: one user, signups disabled.
+- Bot tables have **RLS enabled**: `anon` has no grants; `authenticated` is
+  SELECT-only (dashboard reads). Writes go through the Python engine via
+  `DATABASE_URL` / service role (bypasses RLS). See
+  `supabase/migrations/20260728001000_bot_rls.sql`.
 - Going live: private repo + rotate all keys same day (README checklist).
 
 ## Repo map (engine + docs)
@@ -222,7 +227,8 @@ See WEBUI.md for layout and NOTIFICATIONS.md for email templates.
 | risk.py | Sizing, halts, state helpers |
 | broker.py | Alpaca paper wrapper |
 | backtest.py | Next-open simulator |
-| engine / main | `run_once` and CLI |
+| engine.py / main.py | `run_once(trading_day, submit, shadow)` and CLI |
+| db/ | Store backends + Supabase migrations |
 | trading_day.py | America/New_York session dates via Alpaca calendar |
 | ARCHITECTURE.md | This file |
 | DEPLOY.md | Hosting setup |

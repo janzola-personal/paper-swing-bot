@@ -119,14 +119,20 @@ sideways years.
 6. **Paper results trump backtests.** 60–90 days of live paper trading is the
    only test that includes real fills, real data quirks, and real you.
 
-## Market data (hosted path)
+## Market data
 
-Daily bars come from **Alpaca's market data API** (same account as the broker).
-For historical queries with `end` more than 15 minutes ago, the consolidated
-**SIP** feed is available on the free Basic plan — better than scraping Yahoo
-Finance and reliable from cloud servers. Live hosted runs use this path after
-Part B (CURSOR_PROMPTS.md). Local dev may still use yfinance until migration.
-Backtest and live must call the same `fetch_daily()` so signals stay aligned.
+Daily bars come from **Alpaca's market data API** (same keys as the broker)
+via `data.fetch_daily()` — used by both `backtest.py` and `main.py`.
+
+- Feed: consolidated **SIP** (`feed=sip`).
+- Free Basic plan may query SIP when `end` is at least **15 minutes** old
+  ([Market Data FAQ](https://docs.alpaca.markets/docs/market-data-faq));
+  the code sets `end` to ~16 minutes ago so after-close / historical pulls
+  stay on SIP without Algo Trader Plus.
+- Prices use Alpaca `adjustment=all` (splits + dividends), analogous to
+  yfinance `auto_adjust=True`.
+- Optional offline/dev: `fetch_daily(..., source="yfinance")` or
+  `DATA_SOURCE=yfinance`. Do not mix sources when comparing paper to backtest.
 
 ## Parameters live in config.py
 

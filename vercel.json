@@ -1,0 +1,50 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "functions": {
+    "api/run.py": {
+      "maxDuration": 300,
+      "memory": 1024,
+      "includeFiles": "{*.py,db/**}"
+    },
+    "api/capture.py": {
+      "maxDuration": 120,
+      "memory": 1024,
+      "includeFiles": "{*.py,db/**}"
+    },
+    "api/watchdog.py": {
+      "maxDuration": 60,
+      "memory": 512,
+      "includeFiles": "{*.py,db/**}"
+    },
+    "api/engine_pause.py": {
+      "maxDuration": 30,
+      "memory": 512,
+      "includeFiles": "{*.py,db/**}"
+    },
+    "api/engine_flatten.py": {
+      "maxDuration": 60,
+      "memory": 1024,
+      "includeFiles": "{*.py,db/**}"
+    },
+    "api/engine_reset_halt.py": {
+      "maxDuration": 30,
+      "memory": 512,
+      "includeFiles": "{*.py,db/**}"
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/run",
+      "schedule": "15 21 * * 1-5"
+    },
+    {
+      "path": "/api/capture",
+      "schedule": "31 13 * * 1-5"
+    },
+    {
+      "path": "/api/watchdog",
+      "schedule": "30 22 * * 1-5"
+    }
+  ]
+}

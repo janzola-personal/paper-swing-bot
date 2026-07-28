@@ -1,0 +1,40 @@
+# Morning day-start equity capture (~9:31am ET) for daily-loss halt baseline.
+name: open-capture
+
+on:
+  schedule:
+    # EDT 9:31am = 13:31 UTC; EST 9:31am = 14:31 UTC — use 13:31 (EDT window)
+    - cron: "31 13 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Capture day-start equity
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BOT_SHADOW_MODE: ${{ secrets.BOT_SHADOW_MODE }}
+          STATE_BACKEND: postgres
+        run: |
+          python - <<'PY'
+          import json
+          from hosted import run_open_capture, result_to_dict
+          result = run_open_capture()
+          print(json.dumps(result_to_dict(result), indent=2))
+          if result.status == "error":
+              raise SystemExit(1)
+          PY

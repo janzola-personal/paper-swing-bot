@@ -39,15 +39,18 @@ Optional: enable TOTP MFA on your account after first login.
 ## 2. Vercel setup
 
 1. Import the GitHub repo into Vercel (Hobby).
-2. Framework: Next.js (app lives in `web/` or repo root per project layout from
-   Part C Prompt).
+2. Framework: Next.js (App Router at repo root: `app/`, `lib/`, `components/`).
 3. Add environment variables (see table below). Mark Alpaca and service role
-   as **sensitive**; only expose anon key to the browser bundle.
-4. Deploy. Confirm the dashboard loads and redirects unauthenticated users to
-   login.
+   as **sensitive**; expose only `NEXT_PUBLIC_SUPABASE_URL` +
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` to the browser bundle.
+4. Deploy. Confirm unauthenticated `/dashboard` redirects to `/login`, then
+   sign in with your single Auth user. Mutations (pause / flatten / reset-halt)
+   proxy to Python `/api/engine_*` with `CRON_SECRET`.
 
-Python engine: deploy as Vercel Python serverless functions (see Part B).
-Bundle limit for Python is 500 MB — pandas/numpy fit.
+Python engine: `api/run.py`, `api/capture.py`, `api/watchdog.py` (Vercel
+Python serverless). Shared logic in `hosted.py` / `engine.py`. Bundle limit
+for Python is 500 MB — pandas/numpy fit. Set `CRON_SECRET` in Vercel so Cron
+requests send `Authorization: Bearer …`.
 
 ---
 
@@ -77,8 +80,11 @@ Enable **secret scanning** and **push protection** on the public repo.
 | `ALPACA_API_KEY_ID` | Vercel, Actions | No | Paper trading |
 | `ALPACA_API_SECRET_KEY` | Vercel, Actions | No | Paper trading |
 | `SUPABASE_URL` | Vercel, Actions | Yes (URL only) | API endpoint |
-| `SUPABASE_ANON_KEY` | Vercel (browser) | Yes | Auth client |
+| `SUPABASE_ANON_KEY` | Vercel | Yes | Auth (legacy name) |
+| `NEXT_PUBLIC_SUPABASE_URL` | Vercel | Yes | Browser auth client |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Vercel | Yes | Browser auth client |
 | `SUPABASE_SERVICE_ROLE_KEY` | Vercel server, Actions | **Never client** | Engine DB writes |
+| `CRON_SECRET` | Vercel | No | Cron + Next→engine mutation proxy |
 | `DATABASE_URL` | Vercel, Actions | No | Direct Postgres (if used) |
 | `RESEND_API_KEY` | Vercel, Actions | No | Email |
 | `NOTIFY_EMAIL_TO` | Vercel, Actions | No | Your inbox |
@@ -156,6 +162,17 @@ Before enabling real paper submits:
 
 Then set `BOT_SUBMIT=true`, `BOT_SHADOW_MODE=false`. From here the bot queues
 orders for the next open without you at the keyboard.
+
+### Implemented paths (Part B5)
+
+| Job | Vercel | GitHub Actions |
+|-----|--------|----------------|
+| After-close | `POST/GET /api/run` | `.github/workflows/daily-run.yml` |
+| Open capture | `/api/capture` | `.github/workflows/open-capture.yml` |
+| Watchdog | `/api/watchdog` | `.github/workflows/watchdog.yml` |
+
+Shared entry: `hosted.run_after_close()` / `hosted.run_open_capture()`.
+Next.js stub: repo-root `app/page.tsx` (auth dashboard in Part C).
 
 ---
 

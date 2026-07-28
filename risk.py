@@ -27,17 +27,25 @@ class BotState:
     halted: bool = False              # hard halt (drawdown) -- needs manual reset
     halted_reason: str = ""
     day_halted_date: str = ""         # soft halt (daily loss) -- clears next day
-    last_run_date: str = ""           # idempotency guard
+    last_run_date: str = ""           # legacy file-store idempotency; prefer runs table
+    paused: bool = False              # operator pause from dashboard (no new orders)
+    watchdog_norun_sent_day: str = "" # ISO date we last emailed NO RUN (dedupe)
 
 
 def load_state() -> BotState:
+    """File-backed load (local FileStore / legacy). Prefer db.Store in engine."""
+    from dataclasses import fields as dc_fields
+
     if os.path.exists(config.STATE_FILE):
         with open(config.STATE_FILE) as f:
-            return BotState(**json.load(f))
+            raw = json.load(f)
+        known = {fld.name for fld in dc_fields(BotState)}
+        return BotState(**{k: v for k, v in raw.items() if k in known})
     return BotState()
 
 
 def save_state(state: BotState) -> None:
+    """File-backed save (local FileStore / legacy). Prefer db.Store in engine."""
     with open(config.STATE_FILE, "w") as f:
         json.dump(asdict(state), f, indent=2)
 

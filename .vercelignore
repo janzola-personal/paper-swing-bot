@@ -1,0 +1,13 @@
+# Keep deploy uploads lean — Python engine + Next app only
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+results
+test-results
+playwright-report
+.git
+node_modules
+.next
+*.png
+agent-transcripts

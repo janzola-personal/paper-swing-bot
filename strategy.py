@@ -98,20 +98,34 @@ def month_end_mask(index: pd.DatetimeIndex) -> np.ndarray:
 
 STRATEGIES = {
     "rsi2": rsi2_positions,
+    "rsi2_tight": rsi2_positions,  # same fn; params from config.RSI2_TIGHT in lab
     "trend": trend_positions,
 }
+
+
+def strategy_params(name: str) -> dict:
+    """Parameter dict for a registered strategy name."""
+    if name == "rsi2":
+        return config.RSI2
+    if name == "rsi2_tight":
+        return config.RSI2_TIGHT
+    if name == "trend":
+        return config.TREND
+    raise KeyError(f"Unknown strategy {name!r}")
 
 
 def desired_position_today(df: pd.DataFrame, strategy_name: str) -> tuple[int, str]:
     """For the live loop: desired position (0/1) based on the latest close,
     plus a human-readable reason string for the journal."""
     fn = STRATEGIES[strategy_name]
-    pos = fn(df)
-    d = add_indicators(df, config.RSI2)
+    params = strategy_params(strategy_name)
+    pos = fn(df, params)
+    cfg = params if "entry_rsi" in params else config.RSI2
+    d = add_indicators(df, cfg)
     last = d.iloc[-1]
     reason = (
         f"{strategy_name} | close={last['close']:.2f} rsi2={last['rsi2']:.1f} "
-        f"sma{config.RSI2['exit_sma']}={last['sma_fast']:.2f} "
-        f"sma{config.RSI2['trend_sma']}={last['sma_slow']:.2f}"
+        f"sma{cfg['exit_sma']}={last['sma_fast']:.2f} "
+        f"sma{cfg['trend_sma']}={last['sma_slow']:.2f}"
     )
     return int(pos.iloc[-1]), reason

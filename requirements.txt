@@ -4,3 +4,5 @@ numpy>=1.26
 yfinance>=0.2.40
 python-dotenv>=1.0
 pytest>=8.0
+psycopg[binary]>=3.1  # PostgresStore → Supabase DATABASE_URL
+matplotlib>=3.8       # results/REPORT.md equity curve PNGs (build_report.py)

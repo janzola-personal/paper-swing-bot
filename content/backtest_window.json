@@ -1,0 +1,6 @@
+{
+  "note": "Optional paper-vs-backtest overlay. Replaced when research.yml / build_report writes a windowed series. Until then the API falls back to flat initial cash.",
+  "initial_cash": 5000,
+  "series": [],
+  "buy_hold": []
+}

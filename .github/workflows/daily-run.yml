@@ -1,0 +1,50 @@
+# After-close swing run (~5:15pm ET). Redundant with Vercel Cron /api/run.
+# Idempotency: Postgres UNIQUE (trading_day, strategy) → skipped_duplicate.
+name: daily-run
+
+on:
+  schedule:
+    # EDT 5:15pm = 21:15 UTC; EST 5:15pm = 22:15 UTC — use 21:15 (safe in EDT window)
+    - cron: "15 21 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: After-close run_once (shadow unless BOT_SUBMIT)
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BOT_SHADOW_MODE: ${{ secrets.BOT_SHADOW_MODE }}
+          BOT_SUBMIT: ${{ secrets.BOT_SUBMIT }}
+          STATE_BACKEND: postgres
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFY_EMAIL_TO: ${{ secrets.NOTIFY_EMAIL_TO }}
+          NOTIFY_EMAIL_FROM: ${{ secrets.NOTIFY_EMAIL_FROM }}
+        run: |
+          python - <<'PY'
+          import os, json
+          from hosted import run_after_close, result_to_dict
+          # Fail closed: if secret missing, default shadow on / submit off
+          os.environ.setdefault("BOT_SHADOW_MODE", "true")
+          os.environ.setdefault("BOT_SUBMIT", "false")
+          result = run_after_close()
+          print(json.dumps(result_to_dict(result), indent=2))
+          if result.status == "error":
+              raise SystemExit(1)
+          PY

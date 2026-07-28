@@ -37,6 +37,16 @@ RSI2 = {
     "max_hold_days": 10,    # time stop: exit after this many bars regardless
 }
 
+# Lab variant (E1): stricter entry + shorter hold — NOT active live strategy.
+RSI2_TIGHT = {
+    "rsi_period": 2,
+    "entry_rsi": 5.0,
+    "trend_sma": 200,
+    "exit_sma": 5,
+    "exit_rsi": 65.0,
+    "max_hold_days": 5,
+}
+
 TREND = {
     "trend_sma": 200,       # month-end close above 200-day SMA -> hold, else cash
 }
@@ -52,11 +62,44 @@ ALLOW_SHORTING = False       # long-only. Do not change without a tested strateg
 ALLOW_MARGIN = False         # cash account behavior: never buy more than cash on hand
 
 # ---------------------------------------------------------------------------
+# DATA FRESHNESS (hosted run abort)
+# ---------------------------------------------------------------------------
+# If the latest daily bar is older than this many *calendar* days vs the
+# trading day, skip the run (journal + ERROR notify). Covers long weekends
+# (Fri→Mon = 3) with margin for holidays / API glitches — not for tuning edge.
+MAX_BAR_STALE_DAYS = 5
+
+# ---------------------------------------------------------------------------
 # BACKTEST ASSUMPTIONS
 # ---------------------------------------------------------------------------
 BACKTEST_INITIAL_CASH = 5_000.0
 BACKTEST_YEARS = 15
 SLIPPAGE_BPS = 5             # 0.05% per side; commissions assumed $0 (Alpaca)
+
+# ---------------------------------------------------------------------------
+# PROMOTION GATE (Phase 2 — frozen in gates.md; gatecheck.py reads these)
+# ---------------------------------------------------------------------------
+GATE_STAGE_A = {
+    "min_years_data": 5,
+    "min_trades_intraday": 300,
+    "min_trades_swing": 100,
+    "oos_train_frac": 0.60,
+    "oos_min_net_return": 0.0,
+    "oos_min_profit_factor": 1.2,
+    "oos_max_drawdown_pct": 15.0,
+    "cost_stress_multipliers": [2.0, 3.0],
+    "param_perturb_pct": 0.33,
+    "param_stability_min_profitable_frac": 0.5,
+    "max_daily_halt_days_pct": 5.0,
+    "intraday_slippage_bps": 5,
+    "intraday_half_spread_bps": 2,
+}
+
+GATE_STAGE_B = {
+    "min_trading_days": 60,
+    "min_trades": 40,
+    "max_manual_overrides": 0,
+}
 
 # ---------------------------------------------------------------------------
 # FILES

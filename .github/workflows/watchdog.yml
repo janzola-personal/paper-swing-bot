@@ -1,0 +1,40 @@
+# Late-evening check: alert if today's trading day has no acceptable runs row.
+name: watchdog
+
+on:
+  schedule:
+    # EDT 6:30pm = 22:30 UTC; EST 6:30pm = 23:30 UTC — use 22:30
+    - cron: "30 22 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Missed-run check
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          STATE_BACKEND: postgres
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFY_EMAIL_TO: ${{ secrets.NOTIFY_EMAIL_TO }}
+          NOTIFY_EMAIL_FROM: ${{ secrets.NOTIFY_EMAIL_FROM }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+        run: |
+          python - <<'PY'
+          import json
+          from watchdog_logic import run_watchdog
+          print(json.dumps(run_watchdog(), indent=2))
+          PY

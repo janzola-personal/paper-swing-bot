@@ -22,7 +22,7 @@ import pandas as pd
 import config
 import risk
 from data import fetch_daily
-from strategy import STRATEGIES
+from strategy import STRATEGIES, strategy_params
 
 
 def run_backtest(df: pd.DataFrame, pos: pd.Series, initial_cash: float,
@@ -202,7 +202,7 @@ def main() -> None:
         span = f"{df.index[0].date()} -> {df.index[-1].date()}"
         print(f"\n############ {symbol}  ({span}, {len(df)} bars) ############")
         for name in names:
-            pos = STRATEGIES[name](df)
+            pos = STRATEGIES[name](df, strategy_params(name))
             stats = run_backtest(df, pos, config.BACKTEST_INITIAL_CASH, config.SLIPPAGE_BPS)
             print_report(f"{symbol} / {name}", stats)
             stats["equity_curve"].to_csv(

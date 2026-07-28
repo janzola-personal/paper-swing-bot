@@ -200,12 +200,13 @@ Next.js route handlers — same `run_once` and `risk`/`broker` paths as cron.
 ## Local development
 
 ```bash
-cd web && npm install && npm run dev
+npm install && npm run dev
 ```
 
-Requires `.env.local` with Supabase anon key and server vars for API routes.
-Engine mutations can proxy to local Python during Part A/B before Vercel Python
-functions exist.
+App Router lives at repo root (`app/`, `lib/`, `components/`). Requires
+`.env.local` with `NEXT_PUBLIC_SUPABASE_*` plus server vars for API routes.
+Locally, mutations invoke Python `actions.py` inline when not on Vercel;
+on Vercel, Next proxies to `/api/engine_*` with `CRON_SECRET`.
 
 ---
 
