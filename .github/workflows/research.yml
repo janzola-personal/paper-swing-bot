@@ -31,8 +31,12 @@ jobs:
         run: |
           python build_report.py
           ls -la results/
+          ls -la public/research/equity/
 
       - uses: actions/upload-artifact@v4
         with:
           name: backtest-report
-          path: results/
+          path: |
+            results/
+            content/REPORT.md
+            public/research/equity/

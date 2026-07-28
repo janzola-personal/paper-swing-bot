@@ -44,11 +44,30 @@ export default async function ResearchPage() {
           </a>
         </div>
         <article className="prose-research border border-[var(--line)] p-6 text-sm leading-relaxed [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[var(--line)] [&_th]:p-2 [&_th]:text-left [&_td]:border [&_td]:border-[var(--line)] [&_td]:p-2 [&_img]:max-w-full [&_h1]:text-xl [&_h2]:text-lg [&_h2]:mt-6 [&_a]:text-[var(--accent)]">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              img: ({ src, alt }) => {
+                const raw = typeof src === "string" ? src : undefined;
+                if (!raw) return null;
+                const url =
+                  raw.startsWith("http") || raw.startsWith("/")
+                    ? raw
+                    : `/research/equity/${raw.replace(/^\.\//, "")}`;
+                return (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={url} alt={alt ?? ""} className="max-w-full h-auto my-4" />
+                );
+              },
+            }}
+          >
+            {markdown}
+          </ReactMarkdown>
         </article>
         <p className="text-xs text-[var(--muted)] mt-4">
-          Equity PNGs in the markdown are local artifacts; use the dashboard chart
-          for interactive paper vs expectation.
+          Equity charts live under <code>/research/equity/</code> (regenerate via{" "}
+          <code>python build_report.py</code>). Use the dashboard for interactive paper vs
+          backtest.
         </p>
       </main>
     </>
