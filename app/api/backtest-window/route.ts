@@ -1,49 +1,48 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
-import { loadEquity } from "@/lib/dashboard-data";
+import { loadEquity, parseStrategy } from "@/lib/dashboard-data";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Expected curve for paper comparison.
- * Prefers content/backtest_window.json (committed snapshot); else aligns a
- * flat initial-cash line to paper dates so the chart never shows paper alone.
+ * Expected curve for paper comparison, scoped to one strategy.
+ * Prefers content/backtest_window_<strategy>.json; falls back to
+ * content/backtest_window.json for rsi2.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   const { user, error } = await requireUser();
   if (error || !user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const initialCash = Number(process.env.BACKTEST_INITIAL_CASH || 5000);
-  const paper = await loadEquity("rsi2", 200);
+  const strategy = parseStrategy(req.nextUrl.searchParams.get("strategy"));
+  const initialCash = Number(
+    process.env.BACKTEST_INITIAL_CASH ||
+      (strategy === "lev_trend" ? 20000 : 5000),
+  );
+  const paper = await loadEquity(strategy, 200);
 
-  let expected: { trading_day: string; equity: number }[] = [];
-  try {
-    const file = path.join(process.cwd(), "content", "backtest_window.json");
-    const raw = await readFile(file, "utf-8");
-    const parsed = JSON.parse(raw) as {
-      series?: { trading_day: string; equity: number }[];
-    };
-    expected = parsed.series || [];
-  } catch {
-    expected = [];
+  async function readWindow(fileName: string) {
+    try {
+      const file = path.join(process.cwd(), "content", fileName);
+      const raw = await readFile(file, "utf-8");
+      return JSON.parse(raw) as {
+        series?: { trading_day: string; equity: number }[];
+        buy_hold?: { trading_day: string; equity: number }[];
+      };
+    } catch {
+      return null;
+    }
   }
 
-  // Buy-and-hold placeholder: scale from first paper day if no BH series stored
-  let buyHold: { trading_day: string; equity: number }[] = [];
-  try {
-    const file = path.join(process.cwd(), "content", "backtest_window.json");
-    const raw = await readFile(file, "utf-8");
-    const parsed = JSON.parse(raw) as {
-      buy_hold?: { trading_day: string; equity: number }[];
-    };
-    buyHold = parsed.buy_hold || [];
-  } catch {
-    buyHold = [];
-  }
+  let parsed =
+    (await readWindow(`backtest_window_${strategy}.json`)) ||
+    (strategy === "rsi2" ? await readWindow("backtest_window.json") : null);
+
+  let expected = parsed?.series || [];
+  let buyHold = parsed?.buy_hold || [];
 
   if (!expected.length && paper.length) {
     expected = paper.map((p) => ({
@@ -53,6 +52,7 @@ export async function GET() {
   }
 
   return NextResponse.json({
+    strategy,
     initial_cash: initialCash,
     paper: paper.map((p) => ({
       trading_day: p.trading_day,

@@ -44,6 +44,7 @@ def _mock_broker(*, equity: float = 10_000.0, cash: float = 10_000.0, held=None)
     b.equity_and_cash.return_value = (equity, cash)
     b.positions.return_value = dict(held or {})
     b.flatten_all.return_value = []
+    b.flatten_symbols.return_value = []
     b.submit_market.return_value = "ord-test"
     b.open_orders.return_value = []
     return b

@@ -120,7 +120,17 @@ def desired_position_today(df: pd.DataFrame, strategy_name: str) -> tuple[int, s
     fn = STRATEGIES[strategy_name]
     params = strategy_params(strategy_name)
     pos = fn(df, params)
-    cfg = params if "entry_rsi" in params else config.RSI2
+    if strategy_name == "trend" or "entry_rsi" not in params:
+        sma_n = int(params.get("trend_sma", 200))
+        slow = df["close"].rolling(sma_n).mean()
+        last_close = float(df["close"].iloc[-1])
+        last_sma = float(slow.iloc[-1]) if not np.isnan(slow.iloc[-1]) else float("nan")
+        reason = (
+            f"{strategy_name} | close={last_close:.2f} "
+            f"sma{sma_n}={last_sma:.2f} month_end_ffill"
+        )
+        return int(pos.iloc[-1]), reason
+    cfg = params
     d = add_indicators(df, cfg)
     last = d.iloc[-1]
     reason = (

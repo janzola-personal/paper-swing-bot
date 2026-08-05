@@ -22,7 +22,7 @@ def paper_gate_stats(store: Any, strategy: str) -> dict[str, int | str | None]:
         }
     )
     start = submit_days[0] if submit_days else None
-    journal = _all_journal(store)
+    journal = _all_journal(store, strategy=strategy)
     if start:
         journal = [j for j in journal if (j.get("trading_day") or "") >= start]
 
@@ -40,6 +40,7 @@ def paper_gate_stats(store: Any, strategy: str) -> dict[str, int | str | None]:
         and str(j.get("action", "")).upper() in _OVERRIDE_ACTIONS
     )
     halts = sum(1 for j in journal if str(j.get("action", "")).lower() == "halt")
+
     return {
         "days": len(submit_days),
         "trades": trades,
@@ -93,7 +94,21 @@ def _all_runs(store: Any, strategy: str) -> list[dict[str, Any]]:
     return []
 
 
-def _all_journal(store: Any) -> list[dict[str, Any]]:
+def _all_journal(store: Any, strategy: str | None = None) -> list[dict[str, Any]]:
+    # Fetch unfiltered, then apply strategy filter here so legacy rows without
+    # a strategy tag still count toward rsi2 (pre-migration journal).
     if hasattr(store, "list_journal"):
-        return list(store.list_journal(limit=5000))
-    return list(getattr(store, "journal", []) or [])
+        try:
+            rows = list(store.list_journal(limit=5000, strategy=None))
+        except TypeError:
+            rows = list(store.list_journal(limit=5000))
+    else:
+        rows = list(getattr(store, "journal", []) or [])
+    if strategy is None:
+        return rows
+    out = []
+    for r in rows:
+        tag = r.get("strategy")
+        if tag == strategy or (strategy == "rsi2" and not tag):
+            out.append(r)
+    return out

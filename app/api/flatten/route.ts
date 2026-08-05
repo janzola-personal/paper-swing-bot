@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   if (error || !user?.email) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  let body: { password?: string; confirm?: boolean } = {};
+  let body: { password?: string; confirm?: boolean; engine?: string } = {};
   try {
     body = await req.json();
   } catch {
@@ -25,6 +25,9 @@ export async function POST(req: NextRequest) {
   if (!ok) {
     return NextResponse.json({ error: "password incorrect" }, { status: 403 });
   }
-  const result = await callEngineOrInline("flatten", { actor: user.email });
+  const result = await callEngineOrInline("flatten", {
+    actor: user.email,
+    engine: body.engine || "swing",
+  });
   return NextResponse.json(result.data, { status: result.status });
 }

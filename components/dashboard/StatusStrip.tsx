@@ -7,6 +7,7 @@ type Status = {
   cash: number | null;
   day_pnl_pct: number | null;
   market_open: boolean | null;
+  engine_label?: string;
   last_run: {
     trading_day: string;
     status: string;
@@ -38,20 +39,32 @@ function fmtPct(n: number | null) {
 
 export function StatusStrip({
   status,
+  strategy,
   onRefresh,
 }: {
   status: Status | null;
+  strategy: string;
   onRefresh: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [password, setPassword] = useState("");
-  const [dialog, setDialog] = useState<"flatten" | "reset" | null>(null);
+  const [dialog, setDialog] = useState<"flatten" | "reset" | "flatten_all" | null>(
+    null,
+  );
+
+  const engineName = strategy === "lev_trend" ? "lev_trend" : "swing";
 
   async function pauseToggle() {
     if (!status?.state) return;
     const next = !status.state.paused;
-    if (!confirm(next ? "Pause trading? Scheduled runs will not place orders." : "Resume trading?")) {
+    if (
+      !confirm(
+        next
+          ? `Pause ${status.engine_label || engineName}? That engine will not place orders.`
+          : `Resume ${status.engine_label || engineName}?`,
+      )
+    ) {
       return;
     }
     setBusy("pause");
@@ -59,7 +72,7 @@ export function StatusStrip({
     const res = await fetch("/api/pause", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paused: next }),
+      body: JSON.stringify({ paused: next, engine: engineName }),
     });
     const data = await res.json();
     setBusy(null);
@@ -70,14 +83,22 @@ export function StatusStrip({
     onRefresh();
   }
 
-  async function submitSensitive(kind: "flatten" | "reset") {
+  async function submitSensitive(kind: "flatten" | "reset" | "flatten_all") {
     setBusy(kind);
     setMsg(null);
-    const path = kind === "flatten" ? "/api/flatten" : "/api/reset-halt";
+    const path = kind === "reset" ? "/api/reset-halt" : "/api/flatten";
+    const body =
+      kind === "reset"
+        ? { confirm: true, password, engine: engineName }
+        : {
+            confirm: true,
+            password,
+            engine: kind === "flatten_all" ? "all" : engineName,
+          };
     const res = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirm: true, password }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     setBusy(null);
@@ -87,7 +108,13 @@ export function StatusStrip({
     }
     setDialog(null);
     setPassword("");
-    setMsg(kind === "flatten" ? "Flatten requested." : "Halt cleared; peak re-anchors next run.");
+    setMsg(
+      kind === "reset"
+        ? "Halt cleared; peak re-anchors next run."
+        : kind === "flatten_all"
+          ? "Account-wide flatten requested."
+          : "Engine flatten requested.",
+    );
     onRefresh();
   }
 
@@ -133,7 +160,15 @@ export function StatusStrip({
             onClick={() => setDialog("flatten")}
             className="border border-[var(--danger)] text-[var(--danger)] bg-transparent px-3 py-1.5 text-sm cursor-pointer"
           >
-            Flatten now
+            Flatten engine
+          </button>
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => setDialog("flatten_all")}
+            className="border border-[var(--danger)] text-[var(--muted)] bg-transparent px-3 py-1.5 text-sm cursor-pointer"
+          >
+            Flatten all
           </button>
           {halted ? (
             <button
@@ -178,12 +213,18 @@ export function StatusStrip({
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="bg-[#15261f] border border-[var(--line)] p-5 max-w-md w-full">
             <h3 className="text-lg m-0 mb-2">
-              {dialog === "flatten" ? "Confirm flatten" : "Confirm reset halt"}
+              {dialog === "reset"
+                ? "Confirm reset halt"
+                : dialog === "flatten_all"
+                  ? "Confirm flatten ALL"
+                  : "Confirm flatten engine"}
             </h3>
             <p className="text-sm text-[var(--muted)] mt-0">
-              {dialog === "flatten"
-                ? "Sells every open position (queues for next open). Re-enter your password."
-                : "Clears the hard halt and re-anchors peak equity on the next run. Re-enter your password."}
+              {dialog === "reset"
+                ? "Clears the hard halt for this engine and re-anchors peak equity on the next run. Re-enter your password."
+                : dialog === "flatten_all"
+                  ? "Emergency: sells every open position in the shared paper account. Re-enter your password."
+                  : `Sells only this engine’s symbols (${status?.engine_label || engineName}). Re-enter your password.`}
             </p>
             <input
               type="password"

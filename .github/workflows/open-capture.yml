@@ -32,9 +32,9 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          from hosted import run_open_capture, result_to_dict
-          result = run_open_capture()
-          print(json.dumps(result_to_dict(result), indent=2))
-          if result.status == "error":
+          from hosted import run_open_capture, results_to_dict
+          results = run_open_capture()
+          print(json.dumps(results_to_dict(results), indent=2))
+          if any(r.status == "error" for r in results):
               raise SystemExit(1)
           PY

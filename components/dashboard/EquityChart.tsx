@@ -14,7 +14,7 @@ import {
 
 type Point = { trading_day: string; equity: number };
 
-export function EquityChart() {
+export function EquityChart({ strategy }: { strategy: string }) {
   const [logScale, setLogScale] = useState(false);
   const [rows, setRows] = useState<
     { trading_day: string; paper?: number; expected?: number; buy_hold?: number }[]
@@ -24,7 +24,11 @@ export function EquityChart() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch("/api/backtest-window", { cache: "no-store" });
+      setErr(null);
+      const res = await fetch(
+        `/api/backtest-window?strategy=${encodeURIComponent(strategy)}`,
+        { cache: "no-store" },
+      );
       if (!res.ok) {
         if (!cancelled) setErr("Could not load equity window");
         return;
@@ -53,13 +57,17 @@ export function EquityChart() {
         });
       }
       if (!cancelled) {
-        setRows([...byDay.values()].sort((a, b) => a.trading_day.localeCompare(b.trading_day)));
+        setRows(
+          [...byDay.values()].sort((a, b) =>
+            a.trading_day.localeCompare(b.trading_day),
+          ),
+        );
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [strategy]);
 
   return (
     <section className="border border-[var(--line)] p-4 h-full">
@@ -77,15 +85,19 @@ export function EquityChart() {
       {err ? <p className="text-sm text-[var(--danger)]">{err}</p> : null}
       {!rows.length && !err ? (
         <p className="text-sm text-[var(--muted)]">
-          No equity snapshots yet. After shadow/paper runs, paper equity appears here
-          beside the backtest expectation (same capital window).
+          No equity snapshots yet for this strategy. After shadow/paper runs, paper
+          equity appears here beside the backtest expectation (same capital window).
         </p>
       ) : (
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={rows}>
               <CartesianGrid stroke="rgba(232,240,234,0.08)" />
-              <XAxis dataKey="trading_day" tick={{ fill: "#9fb5a6", fontSize: 10 }} minTickGap={24} />
+              <XAxis
+                dataKey="trading_day"
+                tick={{ fill: "#9fb5a6", fontSize: 10 }}
+                minTickGap={24}
+              />
               <YAxis
                 scale={logScale ? "log" : "auto"}
                 domain={["auto", "auto"]}
@@ -99,7 +111,14 @@ export function EquityChart() {
                 }}
               />
               <Legend />
-              <Line type="monotone" dataKey="paper" name="Paper" stroke="#8fb89a" dot={false} strokeWidth={2} />
+              <Line
+                type="monotone"
+                dataKey="paper"
+                name="Paper"
+                stroke="#8fb89a"
+                dot={false}
+                strokeWidth={2}
+              />
               <Line
                 type="monotone"
                 dataKey="expected"
