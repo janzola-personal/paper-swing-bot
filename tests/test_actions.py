@@ -55,21 +55,22 @@ def test_flatten_now_dry_run_journals(store: MemoryStore, monkeypatch):
 
     broker = MagicMock()
     broker.equity_and_cash.return_value = (10_000.0, 4_000.0)
-    broker.flatten_all.return_value = ["[dry-run] would SELL 10 SPY"]
+    broker.flatten_symbols.return_value = ["[dry-run] would SELL 10 SPY"]
 
-    out = flatten_now("owner@example.com", store=store, broker=broker)
+    out = flatten_now("owner@example.com", store=store, broker=broker, engine="swing")
     assert out["ok"] is True
     assert out["submitted"] is False
-    broker.flatten_all.assert_called_once_with(submit=False)
+    broker.flatten_symbols.assert_called_once()
     assert store.journal[-1]["action"] == "FLATTEN"
     assert store.journal[-1]["actor"] == "owner@example.com"
     assert store.journal[-1]["dry_run"] is True
+    assert store.journal[-1]["strategy"] == "rsi2"
 
 
 def test_flatten_empty_positions_still_journals(store: MemoryStore, monkeypatch):
     monkeypatch.setenv("BOT_SHADOW_MODE", "true")
     broker = MagicMock()
     broker.equity_and_cash.return_value = (10_000.0, 10_000.0)
-    broker.flatten_all.return_value = []
-    flatten_now("a@b.co", store=store, broker=broker)
+    broker.flatten_symbols.return_value = []
+    flatten_now("a@b.co", store=store, broker=broker, engine="swing")
     assert "No open positions" in store.journal[-1]["reason"]

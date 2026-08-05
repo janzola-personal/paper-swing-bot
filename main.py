@@ -60,18 +60,27 @@ def cmd_reset_halt() -> None:
     print("Hard halt cleared. Peak equity will re-anchor on the next run.")
 
 
-def cmd_run(submit: bool, shadow: bool, force: bool) -> None:
+def cmd_run(submit: bool, shadow: bool, force: bool, engine: str) -> None:
     # Env defaults for hosted path (CLI flags override when set)
     if not submit and os.environ.get("BOT_SUBMIT", "").lower() == "true":
         submit = True
     if not shadow and os.environ.get("BOT_SHADOW_MODE", "").lower() == "true":
         shadow = True
-    result = run_once(submit=submit, shadow=shadow, force=force)
+    if engine == "all":
+        from hosted import run_after_close, results_to_dict
+        import json
+
+        # Hosted path honors per-engine env flags; CLI --submit/--shadow apply to swing only.
+        results = run_after_close()
+        print(json.dumps(results_to_dict(results), indent=2))
+        return
+    result = run_once(submit=submit, shadow=shadow, force=force, engine=engine)
     for line in result.messages:
         print(line)
     print(
         f"result: status={result.status} day={result.trading_day} "
-        f"mode={result.mode} orders={result.orders_submitted}"
+        f"mode={result.mode} orders={result.orders_submitted} "
+        f"engine={result.engine}"
     )
 
 
@@ -88,6 +97,12 @@ def main() -> None:
         help="full journal/state path but never submit orders",
     )
     p_run.add_argument("--force", action="store_true", help="bypass claim_run idempotency (local only)")
+    p_run.add_argument(
+        "--engine",
+        choices=["swing", "lev_trend", "all"],
+        default="swing",
+        help="which engine to run (default: swing)",
+    )
 
     sub.add_parser(
         "capture-day-start",
@@ -102,11 +117,13 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.cmd == "run":
-        cmd_run(submit=args.submit, shadow=args.shadow, force=args.force)
+        cmd_run(args.submit, args.shadow, args.force, args.engine)
     elif args.cmd == "capture-day-start":
-        result = capture_day_start()
-        for line in result.messages:
-            print(line)
+        from hosted import run_open_capture, results_to_dict
+        import json
+
+        results = run_open_capture()
+        print(json.dumps(results_to_dict(results), indent=2))
     elif args.cmd == "check":
         cmd_check()
     elif args.cmd == "flatten":

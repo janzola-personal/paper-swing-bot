@@ -26,7 +26,8 @@ class handler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode() or "{}")
             paused = bool(body.get("paused"))
             actor = str(body.get("actor") or "")
-            result = set_paused(paused, actor)
+            engine = str(body.get("engine") or "swing")
+            result = set_paused(paused, actor, engine=engine)
             json_response(self, 200, result)
         except Exception as exc:  # noqa: BLE001
             json_response(self, 400, {"error": str(exc)})

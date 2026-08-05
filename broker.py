@@ -112,6 +112,19 @@ class PaperBroker:
         )
         return str(order.id)
 
+    def flatten_symbols(self, symbols: list[str] | tuple[str, ...], submit: bool) -> list[str]:
+        """Sell open positions in the given symbol universe only (next open)."""
+        wanted = {s.upper() for s in symbols}
+        lines = []
+        for symbol, qty in self.positions().items():
+            if qty > 0 and symbol.upper() in wanted:
+                if submit:
+                    oid = self.submit_market(symbol, qty, "sell")
+                    lines.append(f"SELL {qty} {symbol} (order {oid})")
+                else:
+                    lines.append(f"[dry-run] would SELL {qty} {symbol}")
+        return lines
+
     def flatten_all(self, submit: bool) -> list[str]:
         """Sell every open position (next open). Returns human-readable lines."""
         lines = []

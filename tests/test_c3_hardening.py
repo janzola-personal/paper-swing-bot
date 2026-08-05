@@ -48,6 +48,7 @@ def _broker(*, held=None):
     b.equity_and_cash.return_value = (10_000.0, 10_000.0)
     b.positions.return_value = dict(held or {})
     b.flatten_all.return_value = []
+    b.flatten_symbols.return_value = []
     b.submit_market.return_value = "ord-1"
     b.open_orders.return_value = []
     return b

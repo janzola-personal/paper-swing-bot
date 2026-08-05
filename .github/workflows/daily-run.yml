@@ -32,6 +32,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           BOT_SHADOW_MODE: ${{ secrets.BOT_SHADOW_MODE }}
           BOT_SUBMIT: ${{ secrets.BOT_SUBMIT }}
+          BOT_SHADOW_MODE_LEV_TREND: ${{ secrets.BOT_SHADOW_MODE_LEV_TREND }}
+          BOT_SUBMIT_LEV_TREND: ${{ secrets.BOT_SUBMIT_LEV_TREND }}
           STATE_BACKEND: postgres
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NOTIFY_EMAIL_TO: ${{ secrets.NOTIFY_EMAIL_TO }}
@@ -39,12 +41,14 @@ jobs:
         run: |
           python - <<'PY'
           import os, json
-          from hosted import run_after_close, result_to_dict
+          from hosted import run_after_close, results_to_dict
           # Fail closed: if secret missing, default shadow on / submit off
           os.environ.setdefault("BOT_SHADOW_MODE", "true")
           os.environ.setdefault("BOT_SUBMIT", "false")
-          result = run_after_close()
-          print(json.dumps(result_to_dict(result), indent=2))
-          if result.status == "error":
+          os.environ.setdefault("BOT_SHADOW_MODE_LEV_TREND", "true")
+          os.environ.setdefault("BOT_SUBMIT_LEV_TREND", "false")
+          results = run_after_close()
+          print(json.dumps(results_to_dict(results), indent=2))
+          if any(r.status == "error" for r in results):
               raise SystemExit(1)
           PY

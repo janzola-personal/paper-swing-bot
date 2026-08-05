@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   if (error || !user?.email) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  let body: { paused?: boolean } = {};
+  let body: { paused?: boolean; engine?: string } = {};
   try {
     body = await req.json();
   } catch {
@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
   const result = await callEngineOrInline("pause", {
     paused: body.paused,
     actor: user.email,
+    engine: body.engine || "swing",
   });
   return NextResponse.json(result.data, { status: result.status });
 }

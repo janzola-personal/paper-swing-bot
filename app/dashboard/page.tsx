@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { Nav } from "@/components/Nav";
 import { DashboardClient } from "@/components/dashboard/DashboardClient";
 import { createClient } from "@/lib/supabase/server";
@@ -20,7 +21,9 @@ export default async function DashboardPage() {
           Observe · pause · flatten — no buy button
         </p>
         <h1 className="text-2xl m-0 mb-4 font-medium">Dashboard</h1>
-        <DashboardClient />
+        <Suspense fallback={<p className="text-[var(--muted)] text-sm">Loading…</p>}>
+          <DashboardClient />
+        </Suspense>
       </main>
     </>
   );

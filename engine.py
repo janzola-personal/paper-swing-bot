@@ -1,13 +1,16 @@
 """
 Portable daily engine entry point.
 
-  run_once(trading_day, *, submit, shadow, store=..., broker=...)
+  run_once(trading_day, *, submit, shadow, store=..., broker=..., engine=...)
 
 No local disk writes when using PostgresStore. FileStore is optional for
 local CLI. Dual schedulers rely on store.claim_run UNIQUE(trading_day, strategy).
 
 Hardening (C3): stale bars abort, calendar holidays, partial-fill reconcile,
 crash → runs.status=error (finally), Alpaca retries live in data/broker.
+
+Look-ahead: desired_position_today uses bar t close only; fills at next open.
+EngineSpec parameterization does not change signal timing.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import config
 import notify
 import risk
 import trading_day as trading_day_mod
+from config import EngineSpec
 from data import bars_are_stale, bar_stale_days, fetch_daily, last_bar_date
 from db.store import Store, default_store
 from gate_progress import gate_progress_line, is_first_submit_completion
@@ -43,6 +47,8 @@ class RunResult:
     cash: float = 0.0
     day_pnl_pct: float | None = None
     notify_status: str = ""
+    engine: str = ""
+    strategy: str = ""
 
 
 def _day_pnl(state: risk.BotState, equity: float, today: date) -> float | None:
@@ -58,6 +64,88 @@ def _safe_notify(fn: Callable[[], str]) -> str:
         return f"notify_exception:{type(exc).__name__}"
 
 
+def _resolve_engine(engine: EngineSpec | str | None) -> EngineSpec:
+    if isinstance(engine, EngineSpec):
+        return engine
+    if engine is None or str(engine) == "swing":
+        # Rebuild from live config so monkeypatched SYMBOLS / risk limits
+        # (and ACTIVE_STRATEGY) still apply — keeps swing bit-compatible.
+        base = config.SWING_ENGINE
+        signal = config.ACTIVE_STRATEGY
+        if signal not in STRATEGIES:
+            signal = base.signal
+        # Claim key stays rsi2 for Stage B continuity when running rsi2 family.
+        claim = base.strategy if signal in ("rsi2", "rsi2_tight") else signal
+        return EngineSpec(
+            name=base.name,
+            strategy=claim,
+            signal=signal,
+            symbols=tuple(config.SYMBOLS),
+            max_positions=config.MAX_POSITIONS,
+            max_position_pct=config.MAX_POSITION_PCT,
+            max_daily_loss_pct=config.MAX_DAILY_LOSS_PCT,
+            max_drawdown_halt_pct=config.MAX_DRAWDOWN_HALT_PCT,
+            allocation=None,
+            submit_env=base.submit_env,
+            shadow_env=base.shadow_env,
+            label=base.label,
+        )
+    return config.engine_by_name(str(engine))
+
+
+def _engine_book(
+    spec: EngineSpec,
+    state: risk.BotState,
+    broker: Any,
+) -> tuple[float, float, dict[str, int]]:
+    """Return (equity, cash, held) scoped to this engine.
+
+    Swing (allocation=None): full Alpaca account equity/cash/positions filtered
+    to the engine symbol universe for book management.
+    Allocated engines: virtual_cash + MTM of own symbols; positions filtered.
+    """
+    account_positions = broker.positions() or {}
+    held = {
+        s: q
+        for s, q in account_positions.items()
+        if s in spec.symbols and int(q) > 0
+    }
+
+    if spec.allocation is None:
+        equity, cash = broker.equity_and_cash()
+        return float(equity), float(cash), held
+
+    # Initialize virtual cash once for a new allocated engine.
+    if state.virtual_cash <= 0 and state.peak_equity <= 0 and not held:
+        state.virtual_cash = float(spec.allocation)
+
+    # Mark-to-market engine symbols using last trade / current price from broker
+    # when available; fall back to cost-free MTM via equity_and_cash not usable
+    # per-symbol — use position qty * broker position market value if exposed.
+    mtm = 0.0
+    if hasattr(broker, "position_market_values"):
+        values = broker.position_market_values() or {}
+        for s, q in held.items():
+            if s in values:
+                mtm += float(values[s])
+            elif hasattr(broker, "last_price"):
+                mtm += int(q) * float(broker.last_price(s))
+    elif hasattr(broker, "last_prices"):
+        prices = broker.last_prices(list(held.keys())) or {}
+        for s, q in held.items():
+            mtm += int(q) * float(prices.get(s, 0.0))
+    else:
+        # Tests / minimal mocks: treat held shares as needing an injected price
+        # via broker._mtm_prices dict if present.
+        prices = getattr(broker, "_mtm_prices", {}) or {}
+        for s, q in held.items():
+            mtm += int(q) * float(prices.get(s, 0.0))
+
+    cash = float(state.virtual_cash)
+    equity = cash + mtm
+    return equity, cash, held
+
+
 def run_once(
     trading_day: date | None = None,
     *,
@@ -69,6 +157,7 @@ def run_once(
     fetch_bars: Callable[[str, int], Any] | None = None,
     calendar: Sequence[Session] | None = None,
     calendar_client: Any | None = None,
+    engine: EngineSpec | str | None = None,
 ) -> RunResult:
     """After-close run: claim → risk → signals → reconcile → persist → notify.
 
@@ -79,7 +168,8 @@ def run_once(
     Look-ahead: desired_position_today uses bar t close only; no t+1 data.
     """
     assert config.PAPER_TRADING, "PAPER_TRADING must be True"
-    assert config.ACTIVE_STRATEGY in STRATEGIES, f"Unknown strategy {config.ACTIVE_STRATEGY}"
+    spec = _resolve_engine(engine)
+    assert spec.signal in STRATEGIES, f"Unknown signal strategy {spec.signal}"
 
     store = store if store is not None else default_store()
     fetch = fetch_bars or (lambda sym, years: fetch_daily(sym, years=years))
@@ -110,14 +200,29 @@ def run_once(
                     f"({today.isoformat()}); skipping run."
                 )
                 log.info(msg)
-                return RunResult("skipped_not_trading_day", today, mode, [msg])
+                return RunResult(
+                    "skipped_not_trading_day",
+                    today,
+                    mode,
+                    [msg],
+                    engine=spec.name,
+                    strategy=spec.strategy,
+                )
 
     if today is None:
         msg = "Not a trading day (ET/Alpaca calendar); skipping run."
         log.info(msg)
-        return RunResult("skipped_not_trading_day", None, mode, [msg])
+        return RunResult(
+            "skipped_not_trading_day",
+            None,
+            mode,
+            [msg],
+            engine=spec.name,
+            strategy=spec.strategy,
+        )
 
-    strategy = config.ACTIVE_STRATEGY
+    strategy = spec.strategy
+    signal = spec.signal
 
     if not force:
         claim = store.claim_run(today, strategy, mode)
@@ -126,7 +231,15 @@ def run_once(
                 f"skipped_duplicate: run already claimed for {today.isoformat()} "
                 f"/ {strategy}"
             )
-            return RunResult("skipped_duplicate", today, mode, [msg], orders_submitted=0)
+            return RunResult(
+                "skipped_duplicate",
+                today,
+                mode,
+                [msg],
+                orders_submitted=0,
+                engine=spec.name,
+                strategy=strategy,
+            )
 
     messages: list[str] = []
     decisions: list[DecisionLine] = []
@@ -157,6 +270,7 @@ def run_once(
             equity=eq,
             cash=ca,
             dry_run=not place_orders,
+            strategy=strategy,
         )
         decisions.append(
             DecisionLine(
@@ -176,14 +290,23 @@ def run_once(
             finalized = True
 
     try:
-        state = store.load_state()
+        state = store.load_state(strategy)
 
         if state.paused:
-            msg = "Operator pause active; no orders."
+            msg = f"Operator pause active ({spec.name}); no orders."
             messages.append(msg)
             jlog("*", "info", 0, 0.0, msg, 0.0, 0.0)
             finish("paused")
-            return RunResult(status, today, mode, messages, 0, decisions)
+            return RunResult(
+                status,
+                today,
+                mode,
+                messages,
+                0,
+                decisions,
+                engine=spec.name,
+                strategy=strategy,
+            )
 
         if broker is None:
             from broker import PaperBroker
@@ -196,17 +319,26 @@ def run_once(
                 "the next open like the backtest assumes. Intended usage is after close."
             )
 
-        equity, cash = broker.equity_and_cash()
-        held = broker.positions()
-        # Partial-fill reconcile: broker positions are source of truth next run.
-        # want==1 & have>0 → hold (no top-up); want==0 & have>0 → sell remainder.
+        equity, cash, held = _engine_book(spec, state, broker)
+        # Seed MTM prices from today's closes later; for halt path before fetch,
+        # held MTM may be 0 in tests without _mtm_prices — acceptable.
+
         open_orders: list[dict[str, Any]] = []
         if hasattr(broker, "open_orders"):
             try:
                 open_orders = broker.open_orders() or []
             except Exception as exc:  # noqa: BLE001
                 log.warning("open_orders check failed: %s", type(exc).__name__)
-        recon = f"reconcile held={held or {}} open_orders={len(open_orders)}"
+        # Only surface open orders in this engine's universe.
+        open_orders = [
+            o
+            for o in open_orders
+            if str(o.get("symbol", "")) in spec.symbols
+        ]
+        recon = (
+            f"reconcile engine={spec.name} held={held or {}} "
+            f"open_orders={len(open_orders)}"
+        )
         if open_orders:
             recon += f" pending={[o.get('symbol') for o in open_orders]}"
         messages.append(recon)
@@ -216,23 +348,31 @@ def run_once(
         state = risk.update_peak(state, equity)
         day_pnl = _day_pnl(state, equity, today)
 
-        ok, why = risk.check_limits(state, equity, today)
+        ok, why = risk.check_limits(
+            state,
+            equity,
+            today,
+            max_daily_loss_pct=spec.max_daily_loss_pct,
+            max_drawdown_halt_pct=spec.max_drawdown_halt_pct,
+        )
         if not ok:
             messages.append(f"RISK HALT: {why}")
             jlog("*", "halt", 0, 0.0, why, equity, cash)
             flatten_lines: list[str] = []
-            for line in broker.flatten_all(submit=place_orders):
+            for line in broker.flatten_symbols(list(spec.symbols), submit=place_orders):
                 messages.append(line)
                 flatten_lines.append(line)
                 if place_orders and "order" in line:
                     orders += 1
-            store.save_state(state)
+                # Virtual cash: selling restores cash at unknown fill — leave
+                # virtual_cash unchanged until next reconcile with prices.
+            store.save_state(state, strategy)
             store.snapshot_equity(today, strategy, equity, cash, held)
             finish("halt")
             notify_status = _safe_notify(
                 lambda: notify.send_halt(
                     trading_day=today,
-                    reason=why,
+                    reason=f"[{spec.label}] {why}",
                     equity=equity,
                     peak=state.peak_equity,
                     flatten_lines=flatten_lines,
@@ -249,10 +389,13 @@ def run_once(
                 cash,
                 day_pnl,
                 notify_status,
+                engine=spec.name,
+                strategy=strategy,
             )
 
         wants: list[tuple[str, int, str, float, float]] = []
-        for symbol in config.SYMBOLS:
+        closes: dict[str, float] = {}
+        for symbol in spec.symbols:
             df = fetch(symbol, 2)
             if bars_are_stale(df, today):
                 age = bar_stale_days(df, today)
@@ -265,7 +408,7 @@ def run_once(
                 log.error(detail)
                 messages.append(detail)
                 jlog(symbol, "skip", 0, 0.0, detail, equity, cash)
-                store.save_state(state)
+                store.save_state(state, strategy)
                 finish("skipped_stale_data")
                 notify_status = _safe_notify(
                     lambda d=detail: notify.send_error(
@@ -285,29 +428,48 @@ def run_once(
                     cash,
                     day_pnl,
                     notify_status,
+                    engine=spec.name,
+                    strategy=strategy,
                 )
 
-            want, reason = desired_position_today(df, strategy)
+            want, reason = desired_position_today(df, signal)
             last_close = float(df["close"].iloc[-1])
+            closes[symbol] = last_close
             from data import rsi as _rsi
 
             last_rsi = float(_rsi(df["close"], 2).iloc[-1])
             wants.append((symbol, want, reason, last_close, last_rsi))
 
+        # Refresh MTM with today's closes for allocated engines (and tests).
+        if spec.allocation is not None:
+            mtm = sum(held.get(s, 0) * closes.get(s, 0.0) for s in spec.symbols)
+            cash = float(state.virtual_cash)
+            equity = cash + mtm
+            state = risk.update_peak(state, equity)
+            day_pnl = _day_pnl(state, equity, today)
+
         entries = [w for w in wants if w[1] == 1 and w[0] not in held]
-        entries.sort(key=lambda w: w[4])
-        room = max(config.MAX_POSITIONS - len([s for s, q in held.items() if q > 0]), 0)
+        # rsi2: lower RSI first. trend: no RSI meaning — stable symbol order.
+        if signal == "rsi2":
+            entries.sort(key=lambda w: w[4])
+        else:
+            entries.sort(key=lambda w: w[0])
+        room = max(
+            spec.max_positions - len([s for s, q in held.items() if q > 0]),
+            0,
+        )
         skipped_entries = {w[0] for w in entries[room:]}
 
         messages.append(
-            f"[{mode}] equity=${equity:,.2f} cash=${cash:,.2f} held={held or 'none'}"
+            f"[{mode}/{spec.name}] equity=${equity:,.2f} cash=${cash:,.2f} "
+            f"held={held or 'none'}"
         )
 
         for symbol, want, reason, last_close, _ in wants:
             have = held.get(symbol, 0)
             if want == 1 and have == 0:
                 if symbol in skipped_entries:
-                    msg = f"signal yes, but MAX_POSITIONS={config.MAX_POSITIONS} reached"
+                    msg = f"signal yes, but MAX_POSITIONS={spec.max_positions} reached"
                     messages.append(f"  SKIP  {symbol}: {msg}")
                     jlog(
                         symbol,
@@ -319,7 +481,12 @@ def run_once(
                         cash,
                     )
                     continue
-                qty = risk.size_shares(last_close, equity, cash)
+                qty = risk.size_shares(
+                    last_close,
+                    equity,
+                    cash,
+                    max_position_pct=spec.max_position_pct,
+                )
                 if qty == 0:
                     messages.append(f"  SKIP  {symbol}: sized to 0 shares")
                     jlog(
@@ -338,7 +505,10 @@ def run_once(
                 if place_orders:
                     broker.submit_market(symbol, qty, "buy")
                     orders += 1
-                cash -= qty * last_close
+                cost = qty * last_close
+                cash -= cost
+                if spec.allocation is not None:
+                    state.virtual_cash = float(state.virtual_cash) - cost
                 jlog(symbol, "buy", qty, last_close, reason, equity, cash)
             elif want == 0 and have > 0:
                 # Partial prior sell: have is remaining shares — sell all of it.
@@ -348,6 +518,11 @@ def run_once(
                 if place_orders:
                     broker.submit_market(symbol, have, "sell")
                     orders += 1
+                proceeds = have * last_close
+                cash += proceeds
+                if spec.allocation is not None:
+                    state.virtual_cash = float(state.virtual_cash) + proceeds
+                held[symbol] = 0
                 jlog(symbol, "sell", have, last_close, reason, equity, cash)
             else:
                 # want==1 and have>0 (incl. partial fill) → hold; else flat
@@ -358,8 +533,14 @@ def run_once(
                 messages.append(f"  {action.upper():5s} {symbol}  ({note})")
                 jlog(symbol, action, have, last_close, note, equity, cash)
 
+        # Recompute equity after virtual cash updates.
+        if spec.allocation is not None:
+            mtm = sum(held.get(s, 0) * closes.get(s, 0.0) for s in spec.symbols)
+            cash = float(state.virtual_cash)
+            equity = cash + mtm
+
         state.last_run_date = today.isoformat()
-        store.save_state(state)
+        store.save_state(state, strategy)
         store.snapshot_equity(today, strategy, equity, cash, held)
         first_submit = mode == "submit" and is_first_submit_completion(
             store, strategy, today
@@ -376,7 +557,7 @@ def run_once(
         notify_status = _safe_notify(
             lambda: notify.send_digest(
                 trading_day=today,
-                mode=mode,
+                mode=f"{mode}/{spec.name}",
                 decisions=decisions,
                 equity=equity,
                 cash=cash,
@@ -396,6 +577,8 @@ def run_once(
             cash,
             day_pnl,
             notify_status,
+            engine=spec.name,
+            strategy=strategy,
         )
 
     except Exception as exc:  # noqa: BLE001 — persist error status for schedulers
@@ -423,6 +606,8 @@ def run_once(
             cash,
             day_pnl,
             notify_status,
+            engine=spec.name,
+            strategy=strategy,
         )
     finally:
         # Crash / unexpected exit mid-write: never leave status stuck at 'claimed'.
@@ -441,9 +626,11 @@ def capture_day_start(
     broker: Any | None = None,
     calendar: Sequence[Session] | None = None,
     calendar_client: Any | None = None,
+    engine: EngineSpec | str | None = None,
 ) -> RunResult:
-    """Morning job: lock day_start_equity for the daily-loss halt."""
+    """Morning job: lock day_start_equity for the daily-loss halt (per engine)."""
     assert config.PAPER_TRADING, "PAPER_TRADING must be True"
+    spec = _resolve_engine(engine)
     store = store if store is not None else default_store()
     if session_day is None:
         today = trading_day_mod.resolve_trading_day(
@@ -462,17 +649,33 @@ def capture_day_start(
             None,
             "capture",
             ["Not a trading day; skipping day-start capture."],
+            engine=spec.name,
+            strategy=spec.strategy,
         )
     if broker is None:
         from broker import PaperBroker
 
         broker = PaperBroker()
-    equity, _cash = broker.equity_and_cash()
-    state = store.load_state()
+    state = store.load_state(spec.strategy)
+    equity, _cash, _held = _engine_book(spec, state, broker)
+    # For allocated engines without MTM prices yet, equity ≈ virtual_cash.
+    if spec.allocation is not None and equity <= 0:
+        if state.virtual_cash <= 0:
+            state.virtual_cash = float(spec.allocation)
+        equity = float(state.virtual_cash)
     state = risk.capture_day_start(state, equity, today)
-    store.save_state(state)
+    store.save_state(state, spec.strategy)
     msg = (
-        f"Day-start equity captured for {today.isoformat()}: "
+        f"[{spec.name}] Day-start equity captured for {today.isoformat()}: "
         f"${state.day_start_equity:,.2f} (peak=${state.peak_equity:,.2f})"
     )
-    return RunResult("ok", today, "capture", [msg], equity=equity, cash=_cash)
+    return RunResult(
+        "ok",
+        today,
+        "capture",
+        [msg],
+        equity=equity,
+        cash=_cash,
+        engine=spec.name,
+        strategy=spec.strategy,
+    )

@@ -2,6 +2,7 @@
 Shared helpers for hosted schedulers (Vercel Cron + GitHub Actions).
 
 Defaults are safe for shadow week: BOT_SHADOW_MODE=true, BOT_SUBMIT=false.
+Leveraged trend stays shadow-only until Stage A passes (BOT_SUBMIT_LEV_TREND).
 """
 
 from __future__ import annotations
@@ -11,36 +12,55 @@ import os
 from datetime import date
 from typing import Any
 
+import config
+from config import EngineSpec
 from engine import RunResult, capture_day_start, run_once
 
 
-def shadow_from_env() -> bool:
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).lower() in ("1", "true", "yes")
+
+
+def shadow_from_env(engine: EngineSpec | None = None) -> bool:
     """Default True when unset/blank — shadow week fail-safe."""
-    raw = os.environ.get("BOT_SHADOW_MODE")
-    if raw is None or str(raw).strip() == "":
-        return True
-    return str(raw).lower() in ("1", "true", "yes")
+    if engine is None:
+        return _env_bool("BOT_SHADOW_MODE", default=True)
+    return _env_bool(engine.shadow_env, default=True)
 
 
-def submit_from_env() -> bool:
+def submit_from_env(engine: EngineSpec | None = None) -> bool:
     """Default False when unset/blank — never submit by accident."""
-    raw = os.environ.get("BOT_SUBMIT")
-    if raw is None or str(raw).strip() == "":
-        return False
-    return str(raw).lower() in ("1", "true", "yes")
+    if engine is None:
+        return _env_bool("BOT_SUBMIT", default=False)
+    return _env_bool(engine.submit_env, default=False)
 
 
-def run_after_close(trading_day: date | None = None) -> RunResult:
-    """After-close swing run. Shadow by default — no submit_order."""
-    return run_once(
-        trading_day,
-        submit=submit_from_env(),
-        shadow=shadow_from_env(),
-    )
+def run_after_close(trading_day: date | None = None) -> list[RunResult]:
+    """After-close: run swing then lev_trend sequentially (disjoint symbols)."""
+    results: list[RunResult] = []
+    for name in ("swing", "lev_trend"):
+        spec = config.engine_by_name(name)
+        results.append(
+            run_once(
+                trading_day,
+                submit=submit_from_env(spec),
+                shadow=shadow_from_env(spec),
+                engine=spec,
+            )
+        )
+    return results
 
 
-def run_open_capture(trading_day: date | None = None) -> RunResult:
-    return capture_day_start(trading_day)
+def run_open_capture(trading_day: date | None = None) -> list[RunResult]:
+    """Morning capture for every engine (per-strategy day_start_equity)."""
+    results: list[RunResult] = []
+    for name in ("swing", "lev_trend"):
+        spec = config.engine_by_name(name)
+        results.append(capture_day_start(trading_day, engine=spec))
+    return results
 
 
 def result_to_dict(result: RunResult) -> dict[str, Any]:
@@ -51,6 +71,21 @@ def result_to_dict(result: RunResult) -> dict[str, Any]:
         "orders_submitted": result.orders_submitted,
         "messages": result.messages,
         "notify_status": result.notify_status,
+        "engine": result.engine,
+        "strategy": result.strategy,
+    }
+
+
+def results_to_dict(results: list[RunResult] | RunResult) -> dict[str, Any]:
+    if isinstance(results, RunResult):
+        return result_to_dict(results)
+    return {
+        "engines": [result_to_dict(r) for r in results],
+        "status": (
+            "ok"
+            if all(r.status in ("ok", "paused", "skipped_not_trading_day", "skipped_duplicate") for r in results)
+            else "error"
+        ),
     }
 
 

@@ -65,12 +65,13 @@ sys.path.insert(0, os.getcwd())
 from actions import set_paused, flatten_now, reset_hard_halt
 body = json.loads(sys.argv[1])
 actor = body.get("actor") or ""
+engine = body.get("engine") or "swing"
 if sys.argv[2] == "pause":
-    print(json.dumps(set_paused(bool(body.get("paused")), actor)))
+    print(json.dumps(set_paused(bool(body.get("paused")), actor, engine=engine)))
 elif sys.argv[2] == "flatten":
-    print(json.dumps(flatten_now(actor)))
+    print(json.dumps(flatten_now(actor, engine=engine)))
 else:
-    print(json.dumps(reset_hard_halt(actor)))
+    print(json.dumps(reset_hard_halt(actor, engine=engine)))
 `;
     const py = process.env.PYTHON || ".venv/bin/python";
     const r = spawnSync(py, ["-c", script, JSON.stringify(body), action], {

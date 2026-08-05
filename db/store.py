@@ -6,6 +6,9 @@ Store backends for bot persistence.
 - PostgresStore: production (DATABASE_URL → Supabase)
 
 No secrets are stored in tables; credentials stay in the environment.
+
+bot_state and journal are keyed by strategy (multi-engine). Default strategy
+is "rsi2" for backward-compatible call sites.
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from typing import Any, Protocol
 
 from risk import BotState
 
+DEFAULT_STRATEGY = "rsi2"
+
 
 @dataclass
 class ClaimResult:
@@ -29,8 +34,10 @@ class ClaimResult:
 
 
 class Store(Protocol):
-    def load_state(self) -> BotState: ...
-    def save_state(self, state: BotState) -> None: ...
+    def load_state(self, strategy: str = DEFAULT_STRATEGY) -> BotState: ...
+    def save_state(
+        self, state: BotState, strategy: str = DEFAULT_STRATEGY
+    ) -> None: ...
     def claim_run(self, trading_day: date, strategy: str, mode: str) -> ClaimResult: ...
     def complete_run(
         self, trading_day: date, strategy: str, status: str
@@ -39,7 +46,9 @@ class Store(Protocol):
         self, trading_day: date, strategy: str
     ) -> dict[str, Any] | None: ...
     def list_runs(self, strategy: str) -> list[dict[str, Any]]: ...
-    def list_journal(self, limit: int = 5000) -> list[dict[str, Any]]: ...
+    def list_journal(
+        self, limit: int = 5000, strategy: str | None = None
+    ) -> list[dict[str, Any]]: ...
     def append_journal(
         self,
         *,
@@ -53,6 +62,7 @@ class Store(Protocol):
         cash: float,
         dry_run: bool,
         actor: str | None = None,
+        strategy: str | None = None,
     ) -> None: ...
     def snapshot_equity(
         self,
@@ -71,17 +81,20 @@ class Store(Protocol):
 
 class MemoryStore:
     def __init__(self) -> None:
-        self.state = BotState()
+        self.states: dict[str, BotState] = {}
         self.runs: dict[tuple[str, str], dict[str, Any]] = {}
         self.journal: list[dict[str, Any]] = []
         self.equity: list[dict[str, Any]] = []
         self._run_seq = 0
 
-    def load_state(self) -> BotState:
-        return BotState(**asdict(self.state))
+    def load_state(self, strategy: str = DEFAULT_STRATEGY) -> BotState:
+        st = self.states.get(strategy)
+        if st is None:
+            return BotState()
+        return BotState(**asdict(st))
 
-    def save_state(self, state: BotState) -> None:
-        self.state = BotState(**asdict(state))
+    def save_state(self, state: BotState, strategy: str = DEFAULT_STRATEGY) -> None:
+        self.states[strategy] = BotState(**asdict(state))
 
     def claim_run(self, trading_day: date, strategy: str, mode: str) -> ClaimResult:
         key = (trading_day.isoformat(), strategy)
@@ -120,8 +133,13 @@ class MemoryStore:
             out.append({**row, "trading_day": day, "strategy": strat})
         return out
 
-    def list_journal(self, limit: int = 5000) -> list[dict[str, Any]]:
-        return list(self.journal[-limit:])
+    def list_journal(
+        self, limit: int = 5000, strategy: str | None = None
+    ) -> list[dict[str, Any]]:
+        rows = self.journal
+        if strategy is not None:
+            rows = [r for r in rows if r.get("strategy") == strategy]
+        return list(rows[-limit:])
 
     def append_journal(
         self,
@@ -136,6 +154,7 @@ class MemoryStore:
         cash: float,
         dry_run: bool,
         actor: str | None = None,
+        strategy: str | None = None,
     ) -> None:
         self.journal.append(
             {
@@ -150,6 +169,7 @@ class MemoryStore:
                 "cash": cash,
                 "dry_run": dry_run,
                 "actor": actor,
+                "strategy": strategy,
             }
         )
 
@@ -178,7 +198,11 @@ class MemoryStore:
 
 
 class FileStore:
-    """state.json + journal.csv + runs.json under the working directory."""
+    """state.json + journal.csv + runs.json under the working directory.
+
+    Multi-engine: state keyed under results/state_<strategy>.json when strategy
+    is not the default; journal strategy is prefixed into the reason field.
+    """
 
     def __init__(
         self,
@@ -192,18 +216,26 @@ class FileStore:
         self.journal_path = journal_path or config.JOURNAL_FILE
         self.runs_path = Path(runs_path)
 
-    def load_state(self) -> BotState:
+    def _state_path_for(self, strategy: str) -> str:
+        if strategy == DEFAULT_STRATEGY:
+            return self.state_path
+        base = Path(self.state_path)
+        return str(base.with_name(f"{base.stem}_{strategy}{base.suffix}"))
+
+    def load_state(self, strategy: str = DEFAULT_STRATEGY) -> BotState:
         from dataclasses import fields
 
-        if not os.path.exists(self.state_path):
+        path = self._state_path_for(strategy)
+        if not os.path.exists(path):
             return BotState()
-        with open(self.state_path) as f:
+        with open(path) as f:
             raw = json.load(f)
         known = {fld.name for fld in fields(BotState)}
         return BotState(**{k: v for k, v in raw.items() if k in known})
 
-    def save_state(self, state: BotState) -> None:
-        with open(self.state_path, "w") as f:
+    def save_state(self, state: BotState, strategy: str = DEFAULT_STRATEGY) -> None:
+        path = self._state_path_for(strategy)
+        with open(path, "w") as f:
             json.dump(asdict(state), f, indent=2)
 
     def _load_runs(self) -> dict[str, Any]:
@@ -262,7 +294,9 @@ class FileStore:
             out.append({**row, "trading_day": day, "strategy": strat})
         return out
 
-    def list_journal(self, limit: int = 5000) -> list[dict[str, Any]]:
+    def list_journal(
+        self, limit: int = 5000, strategy: str | None = None
+    ) -> list[dict[str, Any]]:
         # File journal is CSV; Stage B UI uses Postgres. Empty is fine locally.
         return []
 
@@ -279,16 +313,17 @@ class FileStore:
         cash: float,
         dry_run: bool,
         actor: str | None = None,
+        strategy: str | None = None,
     ) -> None:
         import journal as journal_mod
 
-        # Keep CSV schema; trading_day/actor live in reason prefix if needed.
         note = reason
+        if strategy:
+            note = f"[strategy={strategy}] {note}"
         if actor:
-            note = f"[actor={actor}] {reason}"
+            note = f"[actor={actor}] {note}"
         if trading_day is not None:
             note = f"[day={trading_day.isoformat()}] {note}"
-        # Temporarily point journal module at our path
         import config
 
         prev = config.JOURNAL_FILE
@@ -325,7 +360,8 @@ class FileStore:
 
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS bot_state (
-    id integer PRIMARY KEY CHECK (id = 1),
+    id integer PRIMARY KEY AUTOINCREMENT,
+    strategy text NOT NULL UNIQUE,
     peak_equity real NOT NULL DEFAULT 0,
     day_start_equity real NOT NULL DEFAULT 0,
     day_start_trading_day text,
@@ -335,9 +371,10 @@ CREATE TABLE IF NOT EXISTS bot_state (
     paused integer NOT NULL DEFAULT 0,
     last_run_date text,
     watchdog_norun_sent_day text,
+    virtual_cash real NOT NULL DEFAULT 0,
     updated_at text NOT NULL
 );
-INSERT OR IGNORE INTO bot_state (id, updated_at) VALUES (1, datetime('now'));
+INSERT OR IGNORE INTO bot_state (strategy, updated_at) VALUES ('rsi2', datetime('now'));
 
 CREATE TABLE IF NOT EXISTS runs (
     id integer PRIMARY KEY AUTOINCREMENT,
@@ -363,6 +400,7 @@ CREATE TABLE IF NOT EXISTS journal (
     cash real,
     dry_run integer NOT NULL DEFAULT 1,
     actor text,
+    strategy text,
     run_id integer
 );
 
@@ -379,6 +417,28 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
 """
 
 
+def _row_to_bot_state(row: sqlite3.Row | None) -> BotState:
+    if row is None:
+        return BotState()
+    keys = row.keys()
+    return BotState(
+        peak_equity=float(row["peak_equity"] or 0),
+        day_start_equity=float(row["day_start_equity"] or 0),
+        day_start_date=row["day_start_trading_day"] or "",
+        halted=bool(row["halted"]),
+        halted_reason=row["halted_reason"] or "",
+        day_halted_date=row["day_halted_trading_day"] or "",
+        paused=bool(row["paused"]),
+        last_run_date=row["last_run_date"] or "",
+        watchdog_norun_sent_day=(
+            row["watchdog_norun_sent_day"] or ""
+            if "watchdog_norun_sent_day" in keys
+            else ""
+        ),
+        virtual_cash=float(row["virtual_cash"] or 0) if "virtual_cash" in keys else 0.0,
+    )
+
+
 class SQLiteStore:
     def __init__(self, path: str = ":memory:") -> None:
         # check_same_thread=False for pytest flexibility; single-threaded engine use
@@ -387,55 +447,70 @@ class SQLiteStore:
         self._conn.executescript(_SQLITE_SCHEMA)
         self._conn.commit()
 
-    def load_state(self) -> BotState:
-        row = self._conn.execute("SELECT * FROM bot_state WHERE id = 1").fetchone()
-        if row is None:
-            return BotState()
-        keys = row.keys()
-        return BotState(
-            peak_equity=float(row["peak_equity"] or 0),
-            day_start_equity=float(row["day_start_equity"] or 0),
-            day_start_date=row["day_start_trading_day"] or "",
-            halted=bool(row["halted"]),
-            halted_reason=row["halted_reason"] or "",
-            day_halted_date=row["day_halted_trading_day"] or "",
-            paused=bool(row["paused"]),
-            last_run_date=row["last_run_date"] or "",
-            watchdog_norun_sent_day=(
-                row["watchdog_norun_sent_day"] or ""
-                if "watchdog_norun_sent_day" in keys
-                else ""
-            ),
-        )
+    def load_state(self, strategy: str = DEFAULT_STRATEGY) -> BotState:
+        row = self._conn.execute(
+            "SELECT * FROM bot_state WHERE strategy = ?", (strategy,)
+        ).fetchone()
+        return _row_to_bot_state(row)
 
-    def save_state(self, state: BotState) -> None:
-        self._conn.execute(
-            """
-            UPDATE bot_state SET
-              peak_equity = ?,
-              day_start_equity = ?,
-              day_start_trading_day = ?,
-              halted = ?,
-              halted_reason = ?,
-              day_halted_trading_day = ?,
-              paused = ?,
-              last_run_date = ?,
-              watchdog_norun_sent_day = ?,
-              updated_at = datetime('now')
-            WHERE id = 1
-            """,
-            (
-                state.peak_equity,
-                state.day_start_equity,
-                state.day_start_date or None,
-                int(state.halted),
-                state.halted_reason,
-                state.day_halted_date or None,
-                int(state.paused),
-                state.last_run_date or None,
-                state.watchdog_norun_sent_day or None,
-            ),
-        )
+    def save_state(self, state: BotState, strategy: str = DEFAULT_STRATEGY) -> None:
+        existing = self._conn.execute(
+            "SELECT id FROM bot_state WHERE strategy = ?", (strategy,)
+        ).fetchone()
+        if existing is None:
+            self._conn.execute(
+                """
+                INSERT INTO bot_state (
+                  strategy, peak_equity, day_start_equity, day_start_trading_day,
+                  halted, halted_reason, day_halted_trading_day, paused,
+                  last_run_date, watchdog_norun_sent_day, virtual_cash, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    strategy,
+                    state.peak_equity,
+                    state.day_start_equity,
+                    state.day_start_date or None,
+                    int(state.halted),
+                    state.halted_reason,
+                    state.day_halted_date or None,
+                    int(state.paused),
+                    state.last_run_date or None,
+                    state.watchdog_norun_sent_day or None,
+                    state.virtual_cash,
+                ),
+            )
+        else:
+            self._conn.execute(
+                """
+                UPDATE bot_state SET
+                  peak_equity = ?,
+                  day_start_equity = ?,
+                  day_start_trading_day = ?,
+                  halted = ?,
+                  halted_reason = ?,
+                  day_halted_trading_day = ?,
+                  paused = ?,
+                  last_run_date = ?,
+                  watchdog_norun_sent_day = ?,
+                  virtual_cash = ?,
+                  updated_at = datetime('now')
+                WHERE strategy = ?
+                """,
+                (
+                    state.peak_equity,
+                    state.day_start_equity,
+                    state.day_start_date or None,
+                    int(state.halted),
+                    state.halted_reason,
+                    state.day_halted_date or None,
+                    int(state.paused),
+                    state.last_run_date or None,
+                    state.watchdog_norun_sent_day or None,
+                    state.virtual_cash,
+                    strategy,
+                ),
+            )
         self._conn.commit()
 
     def claim_run(self, trading_day: date, strategy: str, mode: str) -> ClaimResult:
@@ -493,11 +568,19 @@ class SQLiteStore:
         ).fetchall()
         return [{k: r[k] for k in r.keys()} for r in rows]
 
-    def list_journal(self, limit: int = 5000) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT * FROM journal ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+    def list_journal(
+        self, limit: int = 5000, strategy: str | None = None
+    ) -> list[dict[str, Any]]:
+        if strategy is None:
+            rows = self._conn.execute(
+                "SELECT * FROM journal ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM journal WHERE strategy = ? ORDER BY id DESC LIMIT ?",
+                (strategy, limit),
+            ).fetchall()
         return [{k: r[k] for k in r.keys()} for r in rows]
 
     def append_journal(
@@ -513,13 +596,14 @@ class SQLiteStore:
         cash: float,
         dry_run: bool,
         actor: str | None = None,
+        strategy: str | None = None,
     ) -> None:
         self._conn.execute(
             """
             INSERT INTO journal (
               trading_day, timestamp_utc, symbol, action, qty, ref_price,
-              reason, equity, cash, dry_run, actor
-            ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              reason, equity, cash, dry_run, actor, strategy
+            ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trading_day.isoformat() if trading_day else None,
@@ -532,6 +616,7 @@ class SQLiteStore:
                 cash,
                 int(dry_run),
                 actor,
+                strategy,
             ),
         )
         self._conn.commit()
@@ -582,10 +667,12 @@ class PostgresStore:
 
         return psycopg.connect(self.database_url)
 
-    def load_state(self) -> BotState:
+    def load_state(self, strategy: str = DEFAULT_STRATEGY) -> BotState:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT * FROM bot_state WHERE id = 1")
+                cur.execute(
+                    "SELECT * FROM bot_state WHERE strategy = %s", (strategy,)
+                )
                 row = cur.fetchone()
                 if row is None:
                     return BotState()
@@ -615,27 +702,36 @@ class PostgresStore:
                 if data.get("watchdog_norun_sent_day")
                 else ""
             ),
+            virtual_cash=float(data.get("virtual_cash") or 0),
         )
 
-    def save_state(self, state: BotState) -> None:
+    def save_state(self, state: BotState, strategy: str = DEFAULT_STRATEGY) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE bot_state SET
-                      peak_equity = %s,
-                      day_start_equity = %s,
-                      day_start_trading_day = %s,
-                      halted = %s,
-                      halted_reason = %s,
-                      day_halted_trading_day = %s,
-                      paused = %s,
-                      last_run_date = %s,
-                      watchdog_norun_sent_day = %s,
+                    INSERT INTO bot_state (
+                      strategy, peak_equity, day_start_equity, day_start_trading_day,
+                      halted, halted_reason, day_halted_trading_day, paused,
+                      last_run_date, watchdog_norun_sent_day, virtual_cash, updated_at
+                    ) VALUES (
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                    )
+                    ON CONFLICT (strategy) DO UPDATE SET
+                      peak_equity = EXCLUDED.peak_equity,
+                      day_start_equity = EXCLUDED.day_start_equity,
+                      day_start_trading_day = EXCLUDED.day_start_trading_day,
+                      halted = EXCLUDED.halted,
+                      halted_reason = EXCLUDED.halted_reason,
+                      day_halted_trading_day = EXCLUDED.day_halted_trading_day,
+                      paused = EXCLUDED.paused,
+                      last_run_date = EXCLUDED.last_run_date,
+                      watchdog_norun_sent_day = EXCLUDED.watchdog_norun_sent_day,
+                      virtual_cash = EXCLUDED.virtual_cash,
                       updated_at = now()
-                    WHERE id = 1
                     """,
                     (
+                        strategy,
                         state.peak_equity,
                         state.day_start_equity,
                         state.day_start_date or None,
@@ -645,6 +741,7 @@ class PostgresStore:
                         state.paused,
                         state.last_run_date or None,
                         state.watchdog_norun_sent_day or None,
+                        state.virtual_cash,
                     ),
                 )
             conn.commit()
@@ -749,19 +846,34 @@ class PostgresStore:
             out.append(data)
         return out
 
-    def list_journal(self, limit: int = 5000) -> list[dict[str, Any]]:
+    def list_journal(
+        self, limit: int = 5000, strategy: str | None = None
+    ) -> list[dict[str, Any]]:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, trading_day, timestamp_utc, symbol, action, qty,
-                           ref_price, reason, equity, cash, dry_run, actor
-                    FROM journal
-                    ORDER BY id DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
+                if strategy is None:
+                    cur.execute(
+                        """
+                        SELECT id, trading_day, timestamp_utc, symbol, action, qty,
+                               ref_price, reason, equity, cash, dry_run, actor, strategy
+                        FROM journal
+                        ORDER BY id DESC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, trading_day, timestamp_utc, symbol, action, qty,
+                               ref_price, reason, equity, cash, dry_run, actor, strategy
+                        FROM journal
+                        WHERE strategy = %s
+                        ORDER BY id DESC
+                        LIMIT %s
+                        """,
+                        (strategy, limit),
+                    )
                 rows = cur.fetchall()
                 cols = [d.name for d in cur.description]
         out = []
@@ -785,6 +897,7 @@ class PostgresStore:
         cash: float,
         dry_run: bool,
         actor: str | None = None,
+        strategy: str | None = None,
     ) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -792,8 +905,8 @@ class PostgresStore:
                     """
                     INSERT INTO journal (
                       trading_day, symbol, action, qty, ref_price,
-                      reason, equity, cash, dry_run, actor
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                      reason, equity, cash, dry_run, actor, strategy
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         trading_day,
@@ -806,6 +919,7 @@ class PostgresStore:
                         cash,
                         dry_run,
                         actor,
+                        strategy,
                     ),
                 )
             conn.commit()

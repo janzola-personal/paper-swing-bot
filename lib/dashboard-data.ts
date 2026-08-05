@@ -1,5 +1,34 @@
 import { createClient } from "@/lib/supabase/server";
 
+/** Known engine claim keys — keep in sync with config.ENGINE_STRATEGIES. */
+export const ENGINE_STRATEGIES = ["rsi2", "lev_trend"] as const;
+export type EngineStrategy = (typeof ENGINE_STRATEGIES)[number];
+
+export const ENGINE_META: Record<
+  EngineStrategy,
+  { name: string; label: string; symbols: string[]; allocation: number | null }
+> = {
+  rsi2: {
+    name: "swing",
+    label: "Swing — rsi2",
+    symbols: ["SPY", "QQQ"],
+    allocation: null,
+  },
+  lev_trend: {
+    name: "lev_trend",
+    label: "Leveraged trend — QLD",
+    symbols: ["QLD"],
+    allocation: 20_000,
+  },
+};
+
+export function parseStrategy(raw: string | null | undefined): EngineStrategy {
+  if (raw && (ENGINE_STRATEGIES as readonly string[]).includes(raw)) {
+    return raw as EngineStrategy;
+  }
+  return "rsi2";
+}
+
 export type BotStateRow = {
   peak_equity: number;
   day_start_equity: number;
@@ -10,6 +39,8 @@ export type BotStateRow = {
   paused: boolean;
   last_run_date: string | null;
   updated_at: string;
+  strategy?: string;
+  virtual_cash?: number;
 };
 
 export type RunRow = {
@@ -34,6 +65,7 @@ export type JournalRow = {
   cash: number | null;
   dry_run: boolean;
   actor: string | null;
+  strategy?: string | null;
 };
 
 export type EquityRow = {
@@ -54,19 +86,26 @@ export function etTodayIso(now = new Date()): string {
   }).format(now);
 }
 
-export async function loadBotState(): Promise<BotStateRow | null> {
+export async function loadBotState(
+  strategy: EngineStrategy = "rsi2",
+): Promise<BotStateRow | null> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("bot_state")
     .select("*")
-    .eq("id", 1)
+    .eq("strategy", strategy)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    // Pre-migration fallback: singleton id=1
+    const legacy = await supabase.from("bot_state").select("*").eq("id", 1).maybeSingle();
+    if (legacy.error) throw error;
+    return legacy.data as BotStateRow | null;
+  }
   return data as BotStateRow | null;
 }
 
 export async function loadLatestRun(
-  strategy = "rsi2",
+  strategy: EngineStrategy = "rsi2",
 ): Promise<RunRow | null> {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -82,7 +121,7 @@ export async function loadLatestRun(
 
 export async function loadRunForDay(
   tradingDay: string,
-  strategy = "rsi2",
+  strategy: EngineStrategy = "rsi2",
 ): Promise<RunRow | null> {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -98,6 +137,7 @@ export async function loadRunForDay(
 export async function loadJournal(opts: {
   limit?: number;
   tradingDay?: string;
+  strategy?: EngineStrategy;
 }): Promise<JournalRow[]> {
   const supabase = await createClient();
   let q = supabase
@@ -108,13 +148,16 @@ export async function loadJournal(opts: {
   if (opts.tradingDay) {
     q = q.eq("trading_day", opts.tradingDay);
   }
+  if (opts.strategy) {
+    q = q.eq("strategy", opts.strategy);
+  }
   const { data, error } = await q;
   if (error) throw error;
   return (data || []) as JournalRow[];
 }
 
 export async function loadEquity(
-  strategy = "rsi2",
+  strategy: EngineStrategy = "rsi2",
   limit = 120,
 ): Promise<EquityRow[]> {
   const supabase = await createClient();
@@ -128,8 +171,23 @@ export async function loadEquity(
   return (data || []) as EquityRow[];
 }
 
+export async function loadLatestEquity(
+  strategy: EngineStrategy,
+): Promise<EquityRow | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("equity_snapshots")
+    .select("trading_day, strategy, equity, cash, created_at")
+    .eq("strategy", strategy)
+    .order("trading_day", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data as EquityRow | null;
+}
+
 export async function loadGateProgress(
-  strategy = "rsi2",
+  strategy: EngineStrategy = "rsi2",
 ): Promise<{
   days: number;
   trades: number;
@@ -164,7 +222,8 @@ export async function loadGateProgress(
 
   let journalQuery = supabase
     .from("journal")
-    .select("trading_day, action, qty, dry_run, actor")
+    .select("trading_day, action, qty, dry_run, actor, strategy")
+    .eq("strategy", strategy)
     .order("id", { ascending: false })
     .limit(5000);
   if (paperStart) {
@@ -217,7 +276,6 @@ export function lastRunIsStale(
   now = new Date(),
 ): boolean {
   if (!run || run.trading_day !== todayEt || run.status !== "ok") {
-    // Only flag after expected window weekdays
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: "America/New_York",
       weekday: "short",
@@ -230,7 +288,6 @@ export function lastRunIsStale(
     const minute = Number(parts.find((p) => p.type === "minute")?.value);
     if (!weekday || ["Sat", "Sun"].includes(weekday)) return false;
     const mins = hour * 60 + minute;
-    // 17:30 ET
     if (mins < 17 * 60 + 30) return false;
     return true;
   }

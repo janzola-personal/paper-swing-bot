@@ -25,7 +25,8 @@ class handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length) if length else b"{}"
             body = json.loads(raw.decode() or "{}")
             actor = str(body.get("actor") or "")
-            result = flatten_now(actor)
+            engine = str(body.get("engine") or "swing")
+            result = flatten_now(actor, engine=engine)
             json_response(self, 200, result)
         except Exception as exc:  # noqa: BLE001
             json_response(self, 400, {"error": str(exc)})

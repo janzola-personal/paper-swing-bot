@@ -30,6 +30,9 @@ class BotState:
     last_run_date: str = ""           # legacy file-store idempotency; prefer runs table
     paused: bool = False              # operator pause from dashboard (no new orders)
     watchdog_norun_sent_day: str = "" # ISO date we last emailed NO RUN (dedupe)
+    # Virtual cash for allocation-scoped engines (lev_trend). Unused (0) when
+    # the engine uses the full Alpaca account book (swing).
+    virtual_cash: float = 0.0
 
 
 def load_state() -> BotState:
@@ -76,8 +79,27 @@ def roll_day(state: BotState, equity: float, today: date) -> BotState:
     return capture_day_start(state, equity, today)
 
 
-def check_limits(state: BotState, equity: float, today: date) -> tuple[bool, str]:
-    """Returns (ok_to_trade, reason). Sets halt flags on the state as needed."""
+def check_limits(
+    state: BotState,
+    equity: float,
+    today: date,
+    *,
+    max_daily_loss_pct: float | None = None,
+    max_drawdown_halt_pct: float | None = None,
+) -> tuple[bool, str]:
+    """Returns (ok_to_trade, reason). Sets halt flags on the state as needed.
+
+    Optional pct overrides let each EngineSpec use its own halt thresholds
+    without mutating global config (dual-engine path).
+    """
+    daily_lim = (
+        config.MAX_DAILY_LOSS_PCT if max_daily_loss_pct is None else max_daily_loss_pct
+    )
+    dd_lim = (
+        config.MAX_DRAWDOWN_HALT_PCT
+        if max_drawdown_halt_pct is None
+        else max_drawdown_halt_pct
+    )
     iso = today.isoformat()
 
     if state.halted:
@@ -88,10 +110,10 @@ def check_limits(state: BotState, equity: float, today: date) -> tuple[bool, str
 
     if state.peak_equity > 0:
         dd = equity / state.peak_equity - 1.0
-        if dd <= -config.MAX_DRAWDOWN_HALT_PCT:
+        if dd <= -dd_lim:
             state.halted = True
             state.halted_reason = (
-                f"Drawdown {dd:.1%} breached -{config.MAX_DRAWDOWN_HALT_PCT:.0%} "
+                f"Drawdown {dd:.1%} breached -{dd_lim:.0%} "
                 f"(equity {equity:.2f} vs peak {state.peak_equity:.2f})"
             )
             return False, state.halted_reason
@@ -99,22 +121,31 @@ def check_limits(state: BotState, equity: float, today: date) -> tuple[bool, str
     # Only evaluate daily loss when morning capture ran for this trading day.
     if state.day_start_date == iso and state.day_start_equity > 0:
         day_pnl = equity / state.day_start_equity - 1.0
-        if day_pnl <= -config.MAX_DAILY_LOSS_PCT:
+        if day_pnl <= -daily_lim:
             state.day_halted_date = iso
             return False, (
-                f"Daily loss {day_pnl:.2%} breached -{config.MAX_DAILY_LOSS_PCT:.0%}; "
+                f"Daily loss {day_pnl:.2%} breached -{daily_lim:.0%}; "
                 "flattening and standing down for the day"
             )
 
     return True, "ok"
 
 
-def size_shares(price: float, equity: float, cash: float) -> int:
+def size_shares(
+    price: float,
+    equity: float,
+    cash: float,
+    *,
+    max_position_pct: float | None = None,
+    allow_margin: bool | None = None,
+) -> int:
     """Whole shares, capped by MAX_POSITION_PCT of equity and by available cash.
     ALLOW_MARGIN is False: we never spend more than cash on hand."""
     if price <= 0:
         return 0
-    budget = min(equity * config.MAX_POSITION_PCT, cash if not config.ALLOW_MARGIN else equity)
+    pct = config.MAX_POSITION_PCT if max_position_pct is None else max_position_pct
+    margin = config.ALLOW_MARGIN if allow_margin is None else allow_margin
+    budget = min(equity * pct, cash if not margin else equity)
     return max(int(budget // price), 0)
 
 

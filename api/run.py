@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from hosted import authorize_cron, json_response, result_to_dict, run_after_close
+from hosted import authorize_cron, json_response, results_to_dict, run_after_close
 
 
 class handler(BaseHTTPRequestHandler):
@@ -30,8 +30,10 @@ class handler(BaseHTTPRequestHandler):
             json_response(self, 401, {"error": "unauthorized"})
             return
         try:
-            result = run_after_close()
-            code = 200 if result.status not in ("error",) else 500
-            json_response(self, code, result_to_dict(result))
+            results = run_after_close()
+            payload = results_to_dict(results)
+            bad = any(r.status == "error" for r in results)
+            code = 500 if bad else 200
+            json_response(self, code, payload)
         except Exception as exc:  # noqa: BLE001
             json_response(self, 500, {"error": str(exc), "status": "error"})

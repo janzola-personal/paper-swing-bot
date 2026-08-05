@@ -184,6 +184,7 @@ def test_engine_digest_on_ok(notify_env, monkeypatch):
     broker.equity_and_cash.return_value = (10_000.0, 10_000.0)
     broker.positions.return_value = {}
     broker.flatten_all.return_value = []
+    broker.flatten_symbols.return_value = []
     broker.open_orders.return_value = []
 
     store = MemoryStore()
@@ -197,5 +198,5 @@ def test_engine_digest_on_ok(notify_env, monkeypatch):
     )
     assert r.status == "ok"
     assert r.notify_status == "sent:200"
-    assert called.get("mode") == "shadow"
+    assert called.get("mode") == "shadow/swing"
     assert called.get("trading_day") == date(2026, 7, 27)
