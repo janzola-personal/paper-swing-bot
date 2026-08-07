@@ -195,3 +195,116 @@ def test_swing_regression_shadow_run_unchanged_shape():
     assert r.engine == "swing"
     assert any(j.get("strategy") == "rsi2" for j in store.journal)
     assert store.get_run(day, "rsi2")["status"] == "ok"
+
+
+def test_shadow_buy_survives_overnight_without_false_drawdown_halt():
+    """Allocated shadow buy must MTM via shadow_positions next day (not ~$24 halt).
+
+    Look-ahead: signals still use bar-t close only; this only persists the
+    simulated fill book when the broker never receives an order.
+    """
+    day1 = date(2026, 7, 27)
+    day2 = date(2026, 7, 28)
+    px = 90.0
+    store = MemoryStore()
+    store.save_state(
+        BotState(peak_equity=20_000.0, virtual_cash=20_000.0),
+        "lev_trend",
+    )
+    # Broker never fills shadow orders — empty held both days.
+    broker = _mock_broker(equity=100_000, cash=100_000, held={}, mtm={"QLD": px})
+    bars = _bars(n=250, last_close=px, end=day1)
+
+    def fetch(sym: str, years: int = 2):
+        return bars.copy()
+
+    r1 = run_once(
+        day1,
+        submit=False,
+        shadow=True,
+        store=store,
+        broker=broker,
+        fetch_bars=fetch,
+        engine="lev_trend",
+    )
+    assert r1.status == "ok", r1.messages
+    st1 = store.load_state("lev_trend")
+    assert "QLD" in st1.shadow_positions
+    qty = st1.shadow_positions["QLD"]
+    assert qty > 0
+    assert st1.virtual_cash < 20_000.0
+    # Leftover cash alone would look like a wipeout without the shadow book.
+    assert st1.virtual_cash < 20_000.0 * 0.10
+
+    bars2 = _bars(n=250, last_close=px, end=day2)
+
+    def fetch2(sym: str, years: int = 2):
+        return bars2.copy()
+
+    r2 = run_once(
+        day2,
+        submit=False,
+        shadow=True,
+        store=store,
+        broker=broker,
+        fetch_bars=fetch2,
+        engine="lev_trend",
+    )
+    assert r2.status == "ok", r2.messages
+    st2 = store.load_state("lev_trend")
+    assert not st2.halted
+    expected = st2.virtual_cash + qty * px
+    assert r2.equity == pytest.approx(expected, rel=1e-6, abs=1.0)
+    assert r2.equity > 15_000.0  # near allocation, not leftover ~$24
+
+
+def test_submit_lev_trend_uses_broker_held_not_stale_shadow():
+    """place_orders syncs shadow from broker; sizing/halts use broker book."""
+    day = date(2026, 7, 27)
+    px = 100.0
+    store = MemoryStore()
+    # Stale shadow book must not inflate equity when submitting for real.
+    store.save_state(
+        BotState(
+            peak_equity=20_000.0,
+            virtual_cash=10_000.0,
+            shadow_positions={"QLD": 999},
+        ),
+        "lev_trend",
+    )
+    broker = _mock_broker(
+        equity=100_000,
+        cash=100_000,
+        held={"QLD": 100},
+        mtm={"QLD": px},
+    )
+    bars = _bars(n=250, last_close=px, end=day)
+
+    def fetch(sym: str, years: int = 2):
+        return bars.copy()
+
+    r = run_once(
+        day,
+        submit=True,
+        shadow=False,
+        store=store,
+        broker=broker,
+        fetch_bars=fetch,
+        engine="lev_trend",
+    )
+    assert r.status == "ok", r.messages
+    st = store.load_state("lev_trend")
+    assert st.shadow_positions == {"QLD": 100}
+    # Equity = virtual_cash + broker qty * px = 10k + 10k
+    assert r.equity == pytest.approx(20_000.0, abs=1.0)
+
+
+def test_sqlite_shadow_positions_roundtrip():
+    store = SQLiteStore()
+    store.save_state(
+        BotState(virtual_cash=24.0, shadow_positions={"QLD": 220}, peak_equity=20_000),
+        "lev_trend",
+    )
+    loaded = store.load_state("lev_trend")
+    assert loaded.shadow_positions == {"QLD": 220}
+    assert loaded.virtual_cash == 24.0
