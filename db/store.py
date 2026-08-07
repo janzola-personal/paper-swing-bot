@@ -372,6 +372,7 @@ CREATE TABLE IF NOT EXISTS bot_state (
     last_run_date text,
     watchdog_norun_sent_day text,
     virtual_cash real NOT NULL DEFAULT 0,
+    shadow_positions_json text NOT NULL DEFAULT '{}',
     updated_at text NOT NULL
 );
 INSERT OR IGNORE INTO bot_state (strategy, updated_at) VALUES ('rsi2', datetime('now'));
@@ -417,6 +418,29 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
 """
 
 
+def _parse_shadow_positions(raw: Any) -> dict[str, int]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str):
+        try:
+            data = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+    else:
+        return {}
+    out: dict[str, int] = {}
+    for k, v in data.items():
+        try:
+            qty = int(v)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            out[str(k)] = qty
+    return out
+
+
 def _row_to_bot_state(row: sqlite3.Row | None) -> BotState:
     if row is None:
         return BotState()
@@ -436,6 +460,11 @@ def _row_to_bot_state(row: sqlite3.Row | None) -> BotState:
             else ""
         ),
         virtual_cash=float(row["virtual_cash"] or 0) if "virtual_cash" in keys else 0.0,
+        shadow_positions=(
+            _parse_shadow_positions(row["shadow_positions_json"])
+            if "shadow_positions_json" in keys
+            else {}
+        ),
     )
 
 
@@ -457,14 +486,16 @@ class SQLiteStore:
         existing = self._conn.execute(
             "SELECT id FROM bot_state WHERE strategy = ?", (strategy,)
         ).fetchone()
+        shadow_json = json.dumps(state.shadow_positions or {})
         if existing is None:
             self._conn.execute(
                 """
                 INSERT INTO bot_state (
                   strategy, peak_equity, day_start_equity, day_start_trading_day,
                   halted, halted_reason, day_halted_trading_day, paused,
-                  last_run_date, watchdog_norun_sent_day, virtual_cash, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                  last_run_date, watchdog_norun_sent_day, virtual_cash,
+                  shadow_positions_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """,
                 (
                     strategy,
@@ -478,6 +509,7 @@ class SQLiteStore:
                     state.last_run_date or None,
                     state.watchdog_norun_sent_day or None,
                     state.virtual_cash,
+                    shadow_json,
                 ),
             )
         else:
@@ -494,6 +526,7 @@ class SQLiteStore:
                   last_run_date = ?,
                   watchdog_norun_sent_day = ?,
                   virtual_cash = ?,
+                  shadow_positions_json = ?,
                   updated_at = datetime('now')
                 WHERE strategy = ?
                 """,
@@ -508,6 +541,7 @@ class SQLiteStore:
                     state.last_run_date or None,
                     state.watchdog_norun_sent_day or None,
                     state.virtual_cash,
+                    shadow_json,
                     strategy,
                 ),
             )
@@ -703,6 +737,9 @@ class PostgresStore:
                 else ""
             ),
             virtual_cash=float(data.get("virtual_cash") or 0),
+            shadow_positions=_parse_shadow_positions(
+                data.get("shadow_positions_json")
+            ),
         )
 
     def save_state(self, state: BotState, strategy: str = DEFAULT_STRATEGY) -> None:
@@ -713,9 +750,10 @@ class PostgresStore:
                     INSERT INTO bot_state (
                       strategy, peak_equity, day_start_equity, day_start_trading_day,
                       halted, halted_reason, day_halted_trading_day, paused,
-                      last_run_date, watchdog_norun_sent_day, virtual_cash, updated_at
+                      last_run_date, watchdog_norun_sent_day, virtual_cash,
+                      shadow_positions_json, updated_at
                     ) VALUES (
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now()
                     )
                     ON CONFLICT (strategy) DO UPDATE SET
                       peak_equity = EXCLUDED.peak_equity,
@@ -728,6 +766,7 @@ class PostgresStore:
                       last_run_date = EXCLUDED.last_run_date,
                       watchdog_norun_sent_day = EXCLUDED.watchdog_norun_sent_day,
                       virtual_cash = EXCLUDED.virtual_cash,
+                      shadow_positions_json = EXCLUDED.shadow_positions_json,
                       updated_at = now()
                     """,
                     (
@@ -742,6 +781,7 @@ class PostgresStore:
                         state.last_run_date or None,
                         state.watchdog_norun_sent_day or None,
                         state.virtual_cash,
+                        json.dumps(state.shadow_positions or {}),
                     ),
                 )
             conn.commit()

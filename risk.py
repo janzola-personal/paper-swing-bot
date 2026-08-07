@@ -13,7 +13,7 @@ Responsibilities:
 
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import date
 
 import config
@@ -33,6 +33,8 @@ class BotState:
     # Virtual cash for allocation-scoped engines (lev_trend). Unused (0) when
     # the engine uses the full Alpaca account book (swing).
     virtual_cash: float = 0.0
+    # Simulated positions when shadow/dry-run (no broker fills). symbol -> qty.
+    shadow_positions: dict[str, int] = field(default_factory=dict)
 
 
 def load_state() -> BotState:
